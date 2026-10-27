@@ -1,4 +1,4 @@
-import { useLayoutEffect, type RefObject } from 'react'
+import { useLayoutEffect, useRef, type RefObject } from 'react'
 import { motion, useMotionValue } from 'motion/react'
 import type { ElementSize } from '../../hooks/useElementSize'
 import type { Pile } from '../../types/pile'
@@ -27,6 +27,8 @@ export function PileView({
   const x = useMotionValue(0)
   const y = useMotionValue(0)
 
+  const didDrag = useRef(false)
+
   const topCard = pile.cards[pile.cards.length - 1]
   const edgeCount = Math.min(3, pile.cards.length - 1)
 
@@ -53,9 +55,10 @@ export function PileView({
       dragElastic={0}
       dragMomentum={false}
       whileDrag={{ scale: 1.04 }}
-      onDragStart={onDragStart}
+      onPointerDown={() => {didDrag.current = false}}
+      onDragStart={() => { didDrag.current = true, onDragStart()}}
       onDragEnd={handleDragEnd}
-      onTap={onOpen}
+      onTap={() => {if (!didDrag.current) onOpen()}}
       style={{ x, y, zIndex: pile.zIndex }}
       className="group absolute top-1/2 left-1/2 h-40 w-28 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none select-none active:cursor-grabbing"
       aria-label={`Pile of ${pile.cards.length} cards. Click to look through it.`}

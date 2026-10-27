@@ -12,9 +12,16 @@ import { PileView } from '../pile/PileView'
 import { Kbd } from '../shared/Kbd'
 import { Wordmark } from '../shared/Wordmark'
 import { ZoneView } from '../zone/ZoneView'
+import type { Player } from '../../types/player'
+import type { TableGameState } from '../../types/game'
+import { socket } from '../../multiplayer/socket'
 
 type TableSurfaceProps = {
   onBackHome?: () => void
+  currentPlayerId: string
+  roomId: string
+  players: Player[]
+  initialTableState: TableGameState
 }
 
 type TableAction = 'move-deck' | 'shuffle' | 'create-pile' | 'flip-selected' | 'reset'
@@ -30,7 +37,7 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-export function TableSurface({ onBackHome }: TableSurfaceProps) {
+export function TableSurface({ onBackHome, currentPlayerId, roomId, players, initialTableState }: TableSurfaceProps) {
   const tableRef = useRef<HTMLElement | null>(null)
   const handRef = useRef<HTMLDivElement | null>(null)
   const zoneRef = useRef<HTMLDivElement | null>(null)
@@ -77,13 +84,16 @@ export function TableSurface({ onBackHome }: TableSurfaceProps) {
     moveLooseCardOrAddToPile,
     moveSelectedCardsOrAddToPile,
     moveCardFromHandToZone,
+    moveSelectedCardsToZone,
+    moveSelectedCardsToHand,
     extractTopCardFromZone,
     createPileFromSelection,
     shuffleDeck,
     resetGame,
-  } = useTableGame()
+    replaceGameState,
+  } = useTableGame(initialTableState)
 
-  const playerHand = hands[0]
+  const playerHand = hands.find((hand) => hand.playerId === currentPlayerId)
   const discardZone = zones.find((zone) => zone.id === 'discard-zone')
   const canCreatePile = selectedCardIds.length >= 2
   const canFlipSelected = selectedCardIds.length > 0
@@ -100,6 +110,23 @@ export function TableSurface({ onBackHome }: TableSurfaceProps) {
 
     return () => window.clearTimeout(timeout)
   }, [notice])
+
+  useEffect(() => {
+    function handleTableState(
+      table: TableGameState,
+    ) {
+      replaceGameState(table)
+    }
+
+    socket.on('table:state', handleTableState)
+
+    return () => {
+      socket.off(
+        'table:state',
+        handleTableState,
+      )
+    }
+  }, [])
 
   // The deck is placed by left/top; once a drag is committed there, drop the drag offset
   // before paint so it doesn't get applied twice.
@@ -218,7 +245,10 @@ export function TableSurface({ onBackHome }: TableSurfaceProps) {
   }
 
   function handleDrawToTable() {
-    drawCard(getDrawLanding(), deckPosition)
+    socket.emit('table:draw', {
+      landingPosition: getDrawLanding(),
+      spawnFrom: deckPosition,
+    })
   }
 
   function handleDrawToHand() {
@@ -256,6 +286,19 @@ export function TableSurface({ onBackHome }: TableSurfaceProps) {
         <header className="pointer-events-none absolute inset-x-0 top-0 z-40 flex items-center justify-between px-5 py-4 md:px-8 md:py-6">
           <div className="pointer-events-auto">
             <Wordmark onClick={onBackHome} />
+          </div>
+
+          <div className="pointer-events-none absolute left-1/2 -translate-x-1/2">
+            <div className="rounded-full border border-ivory/10 bg-black/20 px-3 py-1.5 text-xs text-ivory/55">
+              Room{' '}
+              <span className="font-semibold tracking-[0.12em] text-ivory/85">
+                {roomId}
+              </span>
+
+              <span className="mx-2 text-ivory/20">·</span>
+
+              {players.length} {players.length === 1 ? 'player' : 'players'}
+            </div>
           </div>
 
           <div ref={actionMenuRef} className="pointer-events-auto relative">
@@ -363,7 +406,7 @@ export function TableSurface({ onBackHome }: TableSurfaceProps) {
         </div>
 
         {/* Own stacking context, so ever-growing card z-indexes stay below the hand and the menu. */}
-        <div className="pointer-events-none absolute inset-0 z-20 [&>*]:pointer-events-auto">
+        <div className="pointer-events-none absolute inset-0 z-20 *:pointer-events-auto">
           {piles.map((pile) => (
             <PileView
               key={pile.id}
@@ -408,6 +451,16 @@ export function TableSurface({ onBackHome }: TableSurfaceProps) {
                   selectedCardIds.includes(card.id)
 
                 if (isPartOfMultiSelection) {
+                  if (playerHand && isPositionInside(handRef.current, position)) {
+                    moveSelectedCardsToHand(playerHand.id)
+                    return
+                  }
+
+                  if (discardZone && isPositionInside(zoneRef.current, position)) {
+                    moveSelectedCardsToZone(discardZone.id)
+                    return
+                  }
+
                   moveSelectedCardsOrAddToPile(card.id, position)
                   return
                 }
@@ -508,11 +561,10 @@ function MenuItem({
       role="menuitem"
       disabled={disabled}
       onClick={onClick}
-      className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-sm transition-colors disabled:cursor-default disabled:text-ivory/30 disabled:hover:bg-transparent ${
-        destructive
-          ? 'text-[#e08a80] hover:bg-[#e08a80]/10'
-          : 'text-ivory/90 hover:bg-white/[0.06]'
-      }`}
+      className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-sm transition-colors disabled:cursor-default disabled:text-ivory/30 disabled:hover:bg-transparent ${destructive
+        ? 'text-[#e08a80] hover:bg-[#e08a80]/10'
+        : 'text-ivory/90 hover:bg-white/[0.06]'
+        }`}
     >
       {children}
       {shortcut && <Kbd>{shortcut}</Kbd>}

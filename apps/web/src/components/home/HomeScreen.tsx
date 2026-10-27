@@ -2,9 +2,13 @@ import { CardFront } from '../card/CardFront'
 import { DeckPileStatic } from '../shared/DeckPileStatic'
 import { Kbd } from '../shared/Kbd'
 import { Wordmark } from '../shared/Wordmark'
+import { useState } from 'react'
 
 type HomeScreenProps = {
-  onOpenTable: () => void
+  onCreateRoom: () => void
+  onJoinRoom: (roomId: string) => void
+  isConnecting: boolean
+  roomError: string | null
 }
 
 const fan = [
@@ -22,7 +26,9 @@ const controls = [
   { action: 'Make a pile', how: <>Select a few, then <Kbd>P</Kbd></> },
 ]
 
-export function HomeScreen({ onOpenTable }: HomeScreenProps) {
+export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }: HomeScreenProps) {
+  const [roomCode, setRoomCode] = useState('')
+
   return (
     <main className="min-h-dvh bg-night p-3 md:p-5">
       <section className="felt table-edge relative flex min-h-[calc(100dvh-1.5rem)] flex-col overflow-hidden rounded-[1.25rem] md:min-h-[calc(100dvh-2.5rem)]">
@@ -43,7 +49,8 @@ export function HomeScreen({ onOpenTable }: HomeScreenProps) {
 
             <button
               type="button"
-              onClick={onOpenTable}
+              onClick={onCreateRoom}
+              disabled={isConnecting}
               className="group mt-9 inline-flex h-12 items-center gap-3 rounded-md bg-ivory pr-5 pl-6 font-semibold text-ink shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)] transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gold"
             >
               Open the table
@@ -51,6 +58,50 @@ export function HomeScreen({ onOpenTable }: HomeScreenProps) {
                 <path d="M3 8h10M9 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
+
+            <div className="mt-5">
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault()
+
+                  if (roomCode.length !== 4) return
+
+                  onJoinRoom(roomCode)
+                }}
+                className="flex max-w-sm items-center gap-2"
+              >
+                <input
+                  type="text"
+                  value={roomCode}
+                  maxLength={4}
+                  aria-label="Room code"
+                  placeholder="Room code"
+                  onChange={(event) => {
+                    setRoomCode(
+                      event.target.value
+                        .toUpperCase()
+                        .replace(/[^A-Z0-9]/g, '')
+                        .slice(0, 4),
+                    )
+                  }}
+                  className="h-10 min-w-0 flex-1 rounded-md border border-ivory/15 bg-black/20 px-3 text-sm font-medium tracking-[0.15em] text-ivory uppercase outline-none placeholder:tracking-normal placeholder:text-ivory/35 focus:border-gold"
+                />
+
+                <button
+                  type="submit"
+                  disabled={roomCode.length !== 4 || isConnecting}
+                  className="h-10 rounded-md border border-ivory/15 px-4 text-sm font-medium text-ivory/80 transition-colors hover:border-ivory/30 hover:text-ivory disabled:cursor-default disabled:opacity-35"
+                >
+                  Join
+                </button>
+              </form>
+
+              {roomError && (
+                <p className="mt-2 text-sm text-[#e08a80]">
+                  {roomError}
+                </p>
+              )}
+            </div>
 
             <dl className="mt-12 max-w-104 border-t border-ivory/10 text-sm">
               {controls.map(({ action, how }) => (

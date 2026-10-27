@@ -1,0 +1,76 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Manrope:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Cormorant Garamond', 'Iowan Old Style', Georgia, serif;
+
+  --color-night: #0e100f;
+  --color-ivory: #f4f0e6;
+  --color-paper: #f6f2e8;
+  --color-ink: #191a18;
+  --color-felt: #18463a;
+  --color-gold: #c9ad6e;
+  --color-suit-red: #b23a35;
+  --color-suit-black: #1b1c1a;
+  --color-oxblood: #6b2326;
+}
+
+html,
+body {
+  background: var(--color-night);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  color: var(--color-ivory);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Felt: fine grain over a soft overhead light. */
+.felt {
+  background-color: var(--color-felt);
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.2 -0.02'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+    radial-gradient(120% 90% at 50% 30%, #1f5546 0%, #18463a 48%, #0f2d26 100%);
+}
+
+.table-edge {
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.05),
+    inset 0 0 90px rgb(0 0 0 / 0.45),
+    0 24px 60px rgb(0 0 0 / 0.5);
+}
+
+.card-face {
+  background-image: linear-gradient(180deg, #f9f6ee 0%, #efe9dc 100%);
+  box-shadow:
+    inset 0 0 0 1px rgb(0 0 0 / 0.08),
+    0 1px 1px rgb(0 0 0 / 0.22),
+    0 6px 14px -4px rgb(0 0 0 / 0.35);
+}
+
+.card-back-pattern {
+  background-color: var(--color-oxblood);
+  background-image:
+    repeating-linear-gradient(45deg, rgb(244 240 230 / 0.13) 0 1px, transparent 1px 6px),
+    repeating-linear-gradient(-45deg, rgb(244 240 230 / 0.13) 0 1px, transparent 1px 6px);
+}
+
+.card-edge {
+  background: #ece6d8;
+  box-shadow:
+    inset 0 0 0 1px rgb(0 0 0 / 0.1),
+    0 1px 2px rgb(0 0 0 / 0.25);
+}
