@@ -1,21 +1,44 @@
+import { useEffect, useMemo, useState } from 'react'
+import { HomeScreen } from './components/home/HomeScreen'
+import { TableSurface } from './components/table/TableSurface'
+
+type AppScreen = 'home' | 'table'
+
+function getScreenFromHash(): AppScreen {
+  return window.location.hash === '#table'
+    ? 'table'
+    : 'home'
+}
+
 function App() {
-  return (
-    <main className="flex min-h-dvh items-center justify-center bg-slate-950 p-6 text-white">
-      <section className="text-center">
-        <p className="text-sm font-medium uppercase tracking-widest text-emerald-400">
-          VirtualDecks
-        </p>
+  const initialScreen = useMemo(() => getScreenFromHash(), [])
+  const [screen, setScreen] = useState<AppScreen>(initialScreen)
 
-        <h1 className="mt-3 text-4xl font-bold">
-          Il tavolo è pronto
-        </h1>
+  useEffect(() => {
+    const handleHashChange = () => {
+      setScreen(getScreenFromHash())
+    }
 
-        <p className="mt-4 text-slate-400">
-          React, TypeScript e Tailwind sono configurati.
-        </p>
-      </section>
-    </main>
-  )
+    window.addEventListener('hashchange', handleHashChange)
+
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange)
+    }
+  }, [])
+
+  function openTable() {
+    window.location.hash = 'table'
+    setScreen('table')
+  }
+
+  function openHome() {
+    window.location.hash = ''
+    setScreen('home')
+  }
+
+  return screen === 'table'
+    ? <TableSurface onBackHome={openHome} />
+    : <HomeScreen onOpenTable={openTable} />
 }
 
 export default App
