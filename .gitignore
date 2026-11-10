@@ -1,0 +1,23 @@
+# Dependencies (recreated with npm ci)
+node_modules/
+# Builds
+dist/
+dist-ssr/
+*.tsbuildinfo
+# Secrets / local config
+.env
+.env.*
+!.env.example
+# Logs
+*.log
+logs/
+# Dev tools / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+# Previous project patch staging (stored in a separate archive)
+.block3-source/
+.block3-backup/
+*.patch
+*.diff

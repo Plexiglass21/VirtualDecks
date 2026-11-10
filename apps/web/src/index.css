@@ -1,0 +1,398 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Manrope:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Cormorant Garamond', 'Iowan Old Style', Georgia, serif;
+
+  --color-night: #0e100f;
+  --color-ivory: #f4f0e6;
+  --color-paper: #f6f2e8;
+  --color-ink: #191a18;
+  --color-felt: #18463a;
+  --color-gold: #c9ad6e;
+  --color-suit-red: #b23a35;
+  --color-suit-black: #1b1c1a;
+  --color-oxblood: #6b2326;
+}
+
+html,
+body {
+  background: var(--color-night);
+}
+
+/* Game-only scroll lock. The home page keeps its normal document flow.
+   In mobile Chrome, 100vh can be larger than the *visible* viewport when
+   the browser toolbar is displayed. Never let those minimum heights turn
+   the game into a vertically scrolling document. */
+html.vd-game-active,
+html.vd-game-active body,
+html.vd-game-active #root {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+html.vd-game-active body {
+  position: fixed;
+  inset: 0;
+}
+
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  color: var(--color-ivory);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Felt: fine grain over a soft overhead light. */
+.felt {
+  background-color: var(--color-felt);
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.2 -0.02'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+    radial-gradient(120% 90% at 50% 30%, #1f5546 0%, #18463a 48%, #0f2d26 100%);
+}
+
+.table-edge {
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.05),
+    inset 0 0 90px rgb(0 0 0 / 0.45),
+    0 24px 60px rgb(0 0 0 / 0.5);
+}
+
+.card-face {
+  background-image: linear-gradient(180deg, #f9f6ee 0%, #efe9dc 100%);
+  box-shadow:
+    inset 0 0 0 1px rgb(0 0 0 / 0.08),
+    0 1px 1px rgb(0 0 0 / 0.22),
+    0 6px 14px -4px rgb(0 0 0 / 0.35);
+}
+
+.card-back-pattern {
+  background-color: var(--color-oxblood);
+  background-image:
+    repeating-linear-gradient(45deg, rgb(244 240 230 / 0.13) 0 1px, transparent 1px 6px),
+    repeating-linear-gradient(-45deg, rgb(244 240 230 / 0.13) 0 1px, transparent 1px 6px);
+}
+
+.card-edge {
+  background: #ece6d8;
+  box-shadow:
+    inset 0 0 0 1px rgb(0 0 0 / 0.1),
+    0 1px 2px rgb(0 0 0 / 0.25);
+}
+
+/* Only actual playfield objects disable browser panning. Dialogs, menus,
+   and the list of revealed cards must remain natively scrollable. */
+.game-playfield-background,
+.game-deck,
+.game-deck *,
+.game-discard,
+.game-discard * {
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.game-touch-actions,
+.game-touch-actions button {
+  touch-action: manipulation;
+}
+.game-table [role="dialog"],
+.game-table [role="dialog"] *,
+.game-table [role="menu"],
+.game-table [role="menu"] * {
+  touch-action: auto;
+}
+
+/* Card sizes and native gesture suppression. The cards handle tapping and
+   dragging explicitly; the browser must not select text or open a callout. */
+.table-card { width: 112px; height: 160px; }
+.hand-card {
+  width: 112px;
+  height: 160px;
+  margin-inline: calc(var(--desktop-card-overlap) / -2);
+}
+.table-card, .table-card *, .hand-card, .hand-card * {
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+@media (max-width: 639px) {
+  .table-card, .hand-card { width: 76px; height: 109px; }
+  .hand-card { margin-inline: calc(var(--mobile-card-overlap) / -2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; }
+}
+/* The page uses the VisualViewport height when available. When the toolbar
+   opens/closes, the browser reports a new height and the playfield follows it.
+   A flex child fills the padded game shell without adding its own vh height. */
+.game-page {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: var(--vd-viewport-height, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+.game-table {
+  flex: 1 1 0;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+}
+/* Prevent chaining a gesture from a scrollable popup to the locked game. */
+.game-table [role="dialog"],
+.game-table [role="menu"],
+.game-table aside[aria-label="Cards revealed by other players"] {
+  overscroll-behavior: contain;
+}
+
+
+/* R2.3: no horizontally hidden actions in portrait. All ten are visible. */
+.game-touch-actions { display: none; }
+@media (max-width: 639px), (pointer: coarse) {
+  .game-touch-actions {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    left: 8px;
+    right: 8px;
+    bottom: calc(10rem + env(safe-area-inset-bottom));
+    gap: 5px;
+    padding: 7px;
+    border: 1px solid rgb(244 240 230 / 0.15);
+    border-radius: 12px;
+    background: rgb(16 28 24 / 0.97);
+    box-shadow: 0 10px 32px rgb(0 0 0 / 0.4);
+    backdrop-filter: blur(8px);
+  }
+  .game-touch-actions.without-hand {
+    bottom: calc(10px + env(safe-area-inset-bottom));
+  }
+  .game-touch-actions button {
+    min-height: 44px;
+    padding: 5px 1px;
+    font-size: 10px;
+    line-height: 1.2;
+    white-space: normal;
+  }
+  .game-dock-status {
+    grid-column: 1 / -1;
+    padding: 2px 4px 3px;
+    text-align: center;
+    color: rgb(244 240 230 / 0.75);
+    font-size: 10px;
+  }
+  /* Empty hands stay visible as a real drop target. The previous display:none
+     made the drop hit-test impossible on mobile. */
+  .game-hand.empty-hand {
+    display: block;
+    left: 8px;
+    right: 8px;
+    bottom: max(4px, env(safe-area-inset-bottom));
+    pointer-events: none;
+  }
+  .game-hand.empty-hand .hand-empty-target { height: 80px; }
+  .game-touch-actions.without-hand { bottom: calc(6.2rem + env(safe-area-inset-bottom)); }
+}
+/* Tablets still need the dock above their larger hand. */
+@media (min-width: 640px) and (pointer: coarse) {
+  .game-hand.with-hand { bottom: max(4px, env(safe-area-inset-bottom)); }
+  .game-touch-actions.with-hand {
+    bottom: calc(12.25rem + env(safe-area-inset-bottom));
+  }
+  .game-touch-actions button { font-size: 12px; }
+}
+
+/* Compact landscape layout: a short phone screen is not a 624px-tall table. */
+@media (orientation: landscape) and (max-height: 560px) and (max-width: 1023px) {
+  .game-page { padding: 4px; }
+  .game-table { min-height: 0; border-radius: 10px; }
+  .game-header { height: 43px; padding: 5px 10px; }
+  .game-header .font-display { font-size: 1.18rem; }
+  .game-room-code {
+    top: 50%;
+    left: 50%;
+    translate: -50% -50%;
+  }
+  .game-room-code button { padding: 5px 9px; font-size: 10px; }
+  .game-notice { top: 106px; }
+  .game-touch-actions,
+  .game-touch-actions.with-hand,
+  .game-touch-actions.without-hand {
+    top: 49px;
+    bottom: auto;
+    left: 8px;
+    right: 8px;
+    grid-template-columns: repeat(10, minmax(0, 1fr));
+    padding: 5px;
+    gap: 4px;
+    border-radius: 9px;
+  }
+  .game-touch-actions button {
+    min-height: 38px;
+    font-size: 10px;
+    padding: 3px 1px;
+  }
+  .game-dock-status { display: none; }
+  .table-card { width: 62px; height: 89px; }
+  .hand-card { width: 62px; height: 89px; margin-inline: -17px; }
+  .game-hand.with-hand {
+    right: 6px;
+    left: auto;
+    bottom: max(2px, env(safe-area-inset-bottom));
+    width: min(220px, 34vw);
+    translate: 0 0;
+  }
+  .hand-fan { height: 94px; }
+  .hand-fan > div { padding-top: 18px; }
+  .game-deck-caption, .game-zone-caption { margin-top: 5px; }
+  .game-deck-caption p, .game-zone-caption p { font-size: 10px; }
+  .game-deck-caption p + p, .game-zone-caption p + p { display: none; }
+}
+
+/* R2.5 landscape: put touch controls in a narrow right-side rail.
+   Two rows of buttons across the top left almost no room for the felt on a
+   real phone in landscape. Reserve the middle and left for the cards, deck,
+   and hand. Avoid width restrictions: some Android phones exceed 1023 CSS px. */
+@media (orientation: landscape) and (max-height: 600px) and (pointer: coarse) {
+  .game-page { padding: 3px; }
+  .game-header { height: 42px; padding: 4px 8px; }
+  .game-header .font-display { font-size: 1.1rem; }
+  .game-room-code { top: 50%; left: 50%; translate: -50% -50%; }
+  .game-room-code button { padding: 4px 7px; font-size: 10px; }
+  .game-touch-actions,
+  .game-touch-actions.with-hand,
+  .game-touch-actions.without-hand {
+    left: auto;
+    right: 5px;
+    top: 47px;
+    bottom: 5px;
+    width: clamp(128px, 23vw, 178px);
+    max-height: calc(100% - 52px);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 3px;
+    padding: 5px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+  }
+  .game-touch-actions button {
+    min-height: 34px;
+    font-size: 10px;
+    padding: 3px 1px;
+  }
+  .game-dock-status { display: block; font-size: 9px; line-height: 1.2; }
+  .game-discard {
+    right: calc(clamp(128px, 23vw, 178px) + 14px);
+    top: 38%;
+  }
+  .game-hand.with-hand {
+    left: 8px;
+    right: auto;
+    bottom: max(2px, env(safe-area-inset-bottom));
+    width: min(280px, 40vw);
+    translate: 0 0;
+  }
+  .game-hand .hand-fan { height: 92px; }
+  /* The hand label sits above the fan rather than behind the top card.
+     Hand cards have their own z-index (100+), so the badge must be higher. */
+  .game-hand .hand-status {
+    top: -26px;
+    left: 0;
+    translate: 0 0;
+    z-index: 350;
+  }
+  /* The header normally shares z-40 with the action rail; when Actions
+     opens, the header is raised and the popup sits beside, not under,
+     the rail on the right. The menu still scrolls within the viewport. */
+  .game-action-menu {
+    right: calc(clamp(128px, 23vw, 178px) + 8px);
+    max-width: min(240px, calc(100vw - clamp(128px, 23vw, 178px) - 36px));
+    max-height: calc(var(--vd-viewport-height, 100dvh) - 55px);
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+  }
+  .game-notice { top: 48px; left: 38%; }
+  .game-deck-caption, .game-zone-caption { margin-top: 4px; }
+}
+
+/* Wide desktop home: keep the frame inside the viewport, with overflow
+   confined to the text column on unusually short laptop displays. */
+@media (min-width: 1024px) and (pointer: fine) {
+  .home-page { height: 100dvh; min-height: 0; overflow: hidden; }
+  .home-shell { height: 100%; min-height: 0; }
+  .home-grid { min-height: 0; overflow: hidden; }
+  .home-content {
+    min-height: 0;
+    max-height: 100%;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+  .home-content::-webkit-scrollbar { display: none; }
+  .home-illustration { max-height: min(28rem, 60dvh); }
+}
+@media (min-width: 1024px) and (pointer: fine) and (max-height: 820px) {
+  .home-title { font-size: clamp(2.55rem, 6.2dvh, 3.5rem); }
+  .home-instructions { margin-top: 12px; }
+  .home-grid { padding-bottom: 12px; }
+  .home-illustration { max-height: min(24rem, 56dvh); }
+}
+
+/* R3: zero-card hand is a drop zone in every orientation, including desktop. */
+.game-hand.empty-hand { pointer-events: none; }
+@media (min-width: 640px) and (pointer: fine) {
+  .game-hand.empty-hand { bottom: 12px; width: min(480px, 55vw); }
+}
+@media (min-width: 640px) and (pointer: coarse) {
+  .game-hand.empty-hand { bottom: max(4px, env(safe-area-inset-bottom)); }
+  .game-touch-actions.without-hand { bottom: calc(8.7rem + env(safe-area-inset-bottom)); }
+}
+@media (orientation: landscape) and (max-height: 600px) and (pointer: coarse) {
+  .game-hand.empty-hand {
+    left: 8px;
+    right: auto;
+    bottom: max(2px, env(safe-area-inset-bottom));
+    width: min(245px, 36vw);
+    translate: 0 0;
+  }
+  .game-hand.empty-hand .hand-empty-target { height: 68px; }
+  .game-touch-actions.without-hand { bottom: 5px; }
+}
+
+/* Home R3.2: keep create/join actions accessible even on short screens.
+   The illustrated felt table and typography stay the same, but controls
+   no longer sit below a permanently expanded instructions list. */
+.home-room-actions { max-width: 34rem; }
+@media (min-width: 640px) and (max-width: 1100px) {
+  .home-room-actions { grid-template-columns: 1fr; }
+}
+@media (max-width: 639px) {
+  .home-grid { align-items: start; }
+  .home-content { width: 100%; }
+  .home-illustration { max-height: 11rem; }
+}
+@media (min-width: 1024px) and (pointer: fine) and (max-height: 670px) {
+  .home-title { font-size: 2.7rem; }
+  .home-grid { align-items: start; }
+  .home-illustration { max-height: 20rem; }
+}
