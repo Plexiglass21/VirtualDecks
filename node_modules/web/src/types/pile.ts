@@ -4,4 +4,5 @@ import type { TableObjectState } from './table'
 export type Pile = TableObjectState & {
   id: string
   cards: TableCard[]
+  rotation: number
 }

@@ -37,7 +37,7 @@ export function ZoneView({
           })}
 
           <div className="absolute inset-0 transition-transform duration-150 ease-out group-hover:-translate-y-1">
-            {topCard.faceUp ? (
+            {topCard.faceUp && topCard.rank && topCard.suit ? (
               <CardFront rank={topCard.rank} suit={topCard.suit} />
             ) : (
               <CardBack />

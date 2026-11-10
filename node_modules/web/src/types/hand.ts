@@ -4,4 +4,6 @@ export type Hand = {
   id: string
   playerId: string
   cards: TableCard[]
+  revealedCardIds: string[]
+  revealedToPlayerIds: string[]
 }

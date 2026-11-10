@@ -5,7 +5,7 @@ import { Wordmark } from '../shared/Wordmark'
 import { useState } from 'react'
 
 type HomeScreenProps = {
-  onCreateRoom: () => void
+  onCreateRoom: (deckKind: 'french' | 'italian') => void
   onJoinRoom: (roomId: string) => void
   isConnecting: boolean
   roomError: string | null
@@ -28,6 +28,7 @@ const controls = [
 
 export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }: HomeScreenProps) {
   const [roomCode, setRoomCode] = useState('')
+  const [deckKind, setDeckKind] = useState<'french' | 'italian'>('french')
 
   return (
     <main className="min-h-dvh bg-night p-3 md:p-5">
@@ -47,9 +48,15 @@ export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }
               the game you already know, or make one up as you go.
             </p>
 
+            <fieldset className="mt-6 flex flex-wrap gap-3 text-sm text-ivory/85">
+              <legend className="mb-2 text-xs uppercase tracking-wider text-ivory/60">Choose a deck</legend>
+              <label className="flex items-center gap-2"><input type="radio" name="deckKind" value="french" checked={deckKind === 'french'} onChange={() => setDeckKind('french')} /> French · 52 cards</label>
+              <label className="flex items-center gap-2"><input type="radio" name="deckKind" value="italian" checked={deckKind === 'italian'} onChange={() => setDeckKind('italian')} /> Italian · 40 cards</label>
+            </fieldset>
+
             <button
               type="button"
-              onClick={onCreateRoom}
+              onClick={() => onCreateRoom(deckKind)}
               disabled={isConnecting}
               className="group mt-9 inline-flex h-12 items-center gap-3 rounded-md bg-ivory pr-5 pl-6 font-semibold text-ink shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)] transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gold"
             >

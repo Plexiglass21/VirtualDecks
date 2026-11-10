@@ -59,7 +59,7 @@ export function PileView({
       onDragStart={() => { didDrag.current = true, onDragStart()}}
       onDragEnd={handleDragEnd}
       onTap={() => {if (!didDrag.current) onOpen()}}
-      style={{ x, y, zIndex: pile.zIndex }}
+      style={{ x, y, zIndex: pile.zIndex, rotate: pile.rotation }}
       className="group absolute top-1/2 left-1/2 h-40 w-28 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none select-none active:cursor-grabbing"
       aria-label={`Pile of ${pile.cards.length} cards. Click to look through it.`}
     >
@@ -76,7 +76,7 @@ export function PileView({
       })}
 
       <div className="absolute inset-0 transition-transform duration-150 ease-out group-hover:-translate-y-1">
-        {topCard.faceUp ? (
+        {topCard.faceUp && topCard.rank && topCard.suit ? (
           <CardFront rank={topCard.rank} suit={topCard.suit} />
         ) : (
           <CardBack />

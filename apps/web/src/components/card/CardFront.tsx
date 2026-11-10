@@ -81,6 +81,17 @@ function CourtPanel({ rank, suit }: CardFrontProps) {
 }
 
 export function CardFront({ rank, suit }: CardFrontProps) {
+  // Temporary readable Italian card face; traditional artwork belongs to Block 4.
+  if (['coppe', 'denari', 'bastoni', 'spade'].includes(suit)) {
+    const suitLabels: Record<string, string> = { coppe: 'COPPE', denari: 'DENARI', bastoni: 'BASTONI', spade: 'SPADE' }
+    const rankLabels: Record<string, string> = { A: 'ASSO', F: 'FANTE', C: 'CAVALLO', R: 'RE' }
+    return <div className="card-face flex h-full w-full flex-col items-center justify-between overflow-hidden rounded-lg border-4 border-double border-suit-red/50 p-3 text-suit-black">
+      <span className="self-start text-lg font-bold">{rank}</span>
+      <span className="font-display text-center text-xl font-bold tracking-wide">{rankLabels[rank] ?? rank}<span className="mt-2 block text-xs font-semibold tracking-widest">{suitLabels[suit]}</span></span>
+      <span className="self-end rotate-180 text-lg font-bold">{rank}</span>
+    </div>
+  }
+
   const colorClass = isRedSuit(suit) ? 'text-suit-red' : 'text-suit-black'
 
   return (

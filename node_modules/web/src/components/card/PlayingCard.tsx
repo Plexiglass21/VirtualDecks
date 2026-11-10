@@ -6,14 +6,15 @@ import { CardBack } from './CardBack'
 import { CardFront } from './CardFront'
 
 type PlayingCardProps = {
-  rank: string
-  suit: string
+  rank?: string
+  suit?: string
   dragConstraintsRef: RefObject<HTMLElement | null>
   tableSize: ElementSize
   position: NormalizedPosition
   spawnPosition?: NormalizedPosition
   zIndex: number
   faceUp: boolean
+  rotation: number
   selected: boolean
   onPositionCommit: (position: NormalizedPosition) => void
   onDragStart: () => void
@@ -35,7 +36,7 @@ function isAdditive(event: { shiftKey: boolean, ctrlKey: boolean, metaKey: boole
 }
 
 // Small, stable tilt per card so the table doesn't look like a spreadsheet.
-function getCardTilt(rank: string, suit: string) {
+function getCardTilt(rank = '', suit = '') {
   const code = `${rank}${suit}`
     .split('')
     .reduce((sum, char) => sum + char.charCodeAt(0), 0)
@@ -52,6 +53,7 @@ export function PlayingCard({
   spawnPosition,
   zIndex,
   faceUp,
+  rotation,
   selected,
   onPositionCommit,
   onDragStart,
@@ -137,7 +139,7 @@ export function PlayingCard({
       dragConstraints={dragConstraintsRef}
       dragElastic={0}
       dragMomentum={false}
-      whileDrag={{ scale: 1.06, rotate: 0, boxShadow: liftedShadow }}
+      whileDrag={{ scale: 1.06, boxShadow: liftedShadow }}
       onDragStart={handleDragStart}
       onDrag={handleDrag}
       onDragEnd={handleDragEnd}
@@ -146,11 +148,11 @@ export function PlayingCard({
         if (!isAdditive(event)) onSelectOnly()
       }}
       onDoubleClick={onFlip}
-      style={{ x, y, zIndex, rotate: tilt, boxShadow: restingShadow }}
+      style={{ x, y, zIndex, rotate: rotation + tilt, boxShadow: restingShadow }}
       initial={{ opacity: 0, scale: 0.92 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.2 }}
-      aria-label={faceUp ? `${rank} of ${suit}` : 'Face-down card'}
+      aria-label={faceUp && rank && suit ? `${rank} of ${suit}` : 'Face-down card'}
       aria-pressed={selected}
       className={`group absolute top-1/2 left-1/2 h-40 w-28 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-lg select-none active:cursor-grabbing ${
         selected ? 'outline-2 outline-offset-[3px] outline-gold' : ''
@@ -160,12 +162,12 @@ export function PlayingCard({
         <motion.div
           className="relative h-full w-full"
           initial={false}
-          animate={{ rotateY: faceUp ? 0 : 180 }}
+          animate={{ rotateY: faceUp && rank && suit ? 0 : 180 }}
           transition={{ duration: 0.4, ease: [0.3, 0.7, 0.2, 1] }}
           style={{ transformStyle: 'preserve-3d' }}
         >
           <div className="absolute inset-0" style={{ backfaceVisibility: 'hidden' }}>
-            <CardFront rank={rank} suit={suit} />
+            {rank && suit ? <CardFront rank={rank} suit={suit} /> : <CardBack />}
           </div>
 
           <div
