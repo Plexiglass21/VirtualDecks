@@ -8,6 +8,9 @@ type CardCollectionDialogProps = {
   cards: TableCard[]
   onClose: () => void
   onExtractTopCard?: () => void
+  onFlipPile?: () => void
+  onRotatePile?: () => void
+  onShufflePile?: () => void
 }
 
 export function CardCollectionDialog({
@@ -15,6 +18,9 @@ export function CardCollectionDialog({
   cards,
   onClose,
   onExtractTopCard,
+  onFlipPile,
+  onRotatePile,
+  onShufflePile,
 }: CardCollectionDialogProps) {
   const count = cards.length
 
@@ -61,7 +67,7 @@ export function CardCollectionDialog({
             {cards.map((card, index) => (
               <li key={`${card.id}-${index}`} className="flex flex-col items-center gap-2">
                 <div className="aspect-[7/10] w-24">
-                  {card.faceUp ? (
+                  {card.faceUp && card.rank && card.suit ? (
                     <CardFront rank={card.rank} suit={card.suit} />
                   ) : (
                     <CardBack />
@@ -75,8 +81,11 @@ export function CardCollectionDialog({
           </ol>
         </div>
 
-        {onExtractTopCard && count > 0 && (
-          <div className="flex items-center justify-end gap-3 border-t border-white/[0.07] px-6 py-4">
+        {(onExtractTopCard || onFlipPile || onRotatePile || onShufflePile) && count > 0 && (
+          <div className="flex flex-wrap items-center justify-end gap-3 border-t border-white/[0.07] px-6 py-4">
+            {onFlipPile && <button type="button" onClick={onFlipPile} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Flip pile</button>}
+            {onRotatePile && <button type="button" onClick={onRotatePile} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Rotate 90°</button>}
+            {onShufflePile && <button type="button" onClick={() => { onShufflePile(); onClose() }} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Shuffle pile</button>}
             <button
               type="button"
               onClick={onClose}
@@ -84,13 +93,13 @@ export function CardCollectionDialog({
             >
               Close
             </button>
-            <button
+            {onExtractTopCard && <button
               type="button"
               onClick={onExtractTopCard}
               className="h-9 rounded-md bg-ivory px-4 text-sm font-semibold text-ink transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
             >
               Take the top card
-            </button>
+            </button>}
           </div>
         )}
       </motion.div>

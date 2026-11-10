@@ -12,12 +12,16 @@ type HandViewProps = {
     cardId: string,
     position: NormalizedPosition
   ) => void
+  selectedCardIds: string[]
+  onToggleCardSelection: (cardId: string) => void
 }
 
 export function HandView({
   hand,
   tableRef,
   onDropCard,
+  selectedCardIds,
+  onToggleCardSelection,
 }: HandViewProps) {
   const count = hand.cards.length
   const centerIndex = (count - 1) / 2
@@ -35,12 +39,16 @@ export function HandView({
   }
 
   return (
-    <section aria-label={`Your hand, ${count} cards`} className="flex h-48 items-end justify-center">
+    <section aria-label={`Your hand, ${count} cards`} className="relative flex h-48 items-end justify-center">
+      <p className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-black/30 px-2 py-1 text-[11px] text-ivory/70">
+        Tap cards to select · {selectedCardIds.length} selected · drag to play
+      </p>
       {hand.cards.map((card, index) => {
         const offsetFromCenter = index - centerIndex
         const distance = centerIndex === 0 ? 0 : offsetFromCenter / centerIndex
         const rotate = offsetFromCenter * spread
         const arc = distance * distance * 18
+        const selected = selectedCardIds.includes(card.id)
 
         return (
           <motion.div
@@ -49,6 +57,9 @@ export function HandView({
             dragSnapToOrigin
             dragMomentum={false}
             whileDrag={{ scale: 1.06, zIndex: 300 }}
+            onTap={() => onToggleCardSelection(card.id)}
+            aria-label={`Select card ${card.rank ?? ''} ${card.suit ?? ''}`}
+            aria-pressed={selected}
             className="h-40 w-28 shrink-0 cursor-grab touch-none active:cursor-grabbing"
             style={{
               zIndex: 100 + index,
@@ -78,13 +89,13 @@ export function HandView({
             }}
           >
             <motion.div
-              className="h-full w-full origin-bottom"
+              className={`h-full w-full origin-bottom rounded-md ${selected ? "outline-2 outline-offset-2 outline-gold" : ""}`}
               initial={false}
-              animate={{ rotate, y: arc }}
-              whileHover={{ y: arc - 22 }}
+              animate={{ rotate, y: arc - (selected ? 24 : 0) }}
+              whileHover={{ y: arc - (selected ? 32 : 22) }}
               transition={{ type: 'spring', stiffness: 380, damping: 30 }}
             >
-              {card.faceUp ? (
+              {card.faceUp && card.rank && card.suit ? (
                 <CardFront rank={card.rank} suit={card.suit} />
               ) : (
                 <CardBack />

@@ -1,0 +1,1113 @@
+diff --git a/README_BLOCCO2.md b/README_BLOCCO2.md
+new file mode 100644
+index 0000000..96f7874
+--- /dev/null
++++ b/README_BLOCCO2.md
+@@ -0,0 +1,87 @@
++# VirtualDecks — Blocco 2: distribuzione, rotazione, mani mostrate
++
++Patch basata su `VirtualDecks_Blocco1_progetto.zip`, fornito nella conversazione.
++
++## Scelte funzionali adottate
++
++- Sandbox senza regole automatiche: ogni giocatore può distribuire dal mazzo ai partecipanti **attualmente presenti** nella stanza.
++- **Actions → Deal cards…**: selezione dei destinatari e numero di carte per persona. Distribuzione round-robin (una carta per destinatario a giro), validata in modo atomico sul server: se il mazzo è insufficiente, nessuna carta viene distribuita.
++- **Actions → Show entire hand**: rende pubbliche le carte attualmente nella propria mano (non le sposta dal contenitore `hand`).
++- **Actions → Show selected hand cards**: toccare/cliccare una o più carte della propria mano per selezionarle e poi scegliere questa azione. Il nuovo insieme sostituisce quello precedentemente mostrato.
++- **Actions → Hide revealed cards**: toglie i valori e semi di quelle carte dagli aggiornamenti futuri inviati agli altri giocatori. **Non può cancellare ciò che gli altri hanno già visto o eventualmente registrato.**
++- Le nuove carte pescate/destinate alla mano *dopo* la rivelazione restano private fino a un nuovo comando di rivelazione.
++- La rivelazione è rivolta a tutti i giocatori della stanza, senza selezione del destinatario; è persistente fino al comando Hide, all'uscita del proprietario dalla stanza o al reset.
++- Il numero di carte nella mano di ogni giocatore è pubblico; i valori delle carte nascoste e i relativi UUID non vengono trasmessi.
++- **Actions → Rotate selected 90° (R)** ruota carte libere, sincronizzando l'angolo su tutti i client.
++- Aprendo una pila: `Flip pile`, `Rotate 90°`, `Shuffle pile`; tutte le operazioni sono eseguite dal server. Le pile esistenti restano trascinabili e supportano l'estrazione della carta superiore.
++
++## Struttura tecnica
++
++**Backend** `apps/server/src/game.ts`:
++- `Hand.revealedCardIds`: scelta esplicita del proprietario, mantenuta nel gioco server.
++- `viewFor(game, playerId)`: la mano propria comprende tutti gli ID e le facce; le mani altrui contengono l'ID e la faccia soltanto delle carte rivelate e placeholder anonimi per le altre.
++- Nuovi comandi in `applyAction`: `deal`, `reveal-hand`, `hide-hand`, `rotate-cards`, `rotate-pile`, `flip-pile`, `shuffle-pile`.
++- Convalidati proprietario, destinatari connessi, ID, quantità, angoli e disponibilità del mazzo.
++- I comandi che spostano una carta fuori dalla mano eliminano l'ID dall'elenco delle rivelazioni.
++
++**Socket.IO** `apps/server/src/index.ts`:
++- Continua a pubblicare `table:state` personalizzato per ogni giocatore.
++- Verifica destinatari `deal` contro i membri connessi.
++- Quando il proprietario lascia la stanza, la sua rivelazione pubblica viene cancellata e la nuova vista viene inviata agli altri.
++
++**Frontend**:
++- `HandView`: tap/clic per selezionare carte della propria mano, drag invariato per giocarle.
++- `RevealedHands`: piccolo pannello che visualizza soltanto le carte rivelate dagli altri.
++- `DealCardsDialog`: selezione destinatari, quantità, validazione quantità rispetto al mazzo.
++- `PlayingCard` e `PileView`: visualizzano le rotazioni persistenti.
++- `CardCollectionDialog`: comandi della pila.
++
++## Installazione
++
++Con progetto già aggiornato al Blocco 1 e dopo aver salvato le modifiche locali:
++
++```bash
++# dalla root del progetto; scarica/copia qui il file .patch
++
++git switch -c feat/block-2-cards
++
++git apply --check VirtualDecks_Blocco2.patch
++git apply VirtualDecks_Blocco2.patch
++
++npm install
++npm run typecheck:web
++npm run test:server
++npm run build:web
++```
++
++Per avviare:
++
++```bash
++npm run dev:server
++npm run dev:web
++```
++
++Apri la pagina in due finestre/browser e prova:
++1. A crea stanza; B entra.
++2. A esegue `Actions → Deal cards…` e assegna 3 carte a entrambi.
++3. B vede il conteggio della mano di A, **non** i valori.
++4. A seleziona 2 carte della propria mano con tap/clic; poi `Actions → Show selected hand cards`. B vede solo quelle 2.
++5. A seleziona `Actions → Show entire hand`. B vede tutte le carte attuali di A.
++6. A pesca un'altra carta nella mano. B continua a non vedere la carta nuova.
++7. A sceglie `Actions → Hide revealed cards`. B non riceve più i valori, fermo restando ciò che era già stato osservato.
++8. A prende due carte sul tavolo, preme `R`, forma una pila e prova i comandi all'interno della pila.
++
++## Test effettuati
++
++- TypeScript `tsc -p apps/server/tsconfig.json`: passato
++- TypeScript `tsc -p apps/web/tsconfig.app.json`: passato
++- `node --test apps/server/test/*.test.mjs`: 11/11 passati, inclusi due test con socket reali
++- Build Vite non verificabile qui: l'installazione della cache disponibili non contiene il binding nativo Linux di rolldown. Eseguire `npm install && npm run build:web` nella propria macchina.
++
++## Limitazioni consapevoli
++
++- Le rivelazioni non implicano memoria reversibile: una carta già mostrata potrebbe essere ricordata o registrata dagli avversari.
++- Gestione di riconnessione e identità dopo refresh non inclusa (Blocco 3).
++- Non è ancora presente un sistema di lock su una carta durante un drag simultaneo.
++- Pile già aperte si chiudono dopo modifica per non mostrare dati obsoleti.
++- UI mobile e browser reali non testati in questo ambiente; da validare manualmente.
+diff --git a/apps/server/src/game.ts b/apps/server/src/game.ts
+index 455254a..5ed92a9 100644
+--- a/apps/server/src/game.ts
++++ b/apps/server/src/game.ts
+@@ -4,9 +4,9 @@ export type Point = { x: number; y: number }
+ export type DeckKind = 'french' | 'italian'
+ export type Card = { id: string; rank: string; suit: string }
+ export type TableCard = Card & { faceUp: boolean }
+-export type LooseCard = TableCard & { position: Point; zIndex: number; spawnFrom?: Point }
+-export type Pile = { id: string; position: Point; zIndex: number; cards: TableCard[] }
+-export type Hand = { id: string; playerId: string; cards: TableCard[] }
++export type LooseCard = TableCard & { position: Point; zIndex: number; rotation: number; spawnFrom?: Point }
++export type Pile = { id: string; position: Point; zIndex: number; rotation: number; cards: TableCard[] }
++export type Hand = { id: string; playerId: string; cards: TableCard[]; revealedCardIds: string[] }
+ export type Zone = { id: string; label: string; type: 'discard'; cards: TableCard[] }
+ 
+ // Internal state MUST NEVER be emitted to the room. It contains every card identity.
+@@ -28,21 +28,28 @@ export type GameView = {
+   version: number
+   deckCount: number
+   deckPosition: Point
+-  looseCards: (VisibleCard & { position: Point; zIndex: number; spawnFrom?: Point })[]
+-  piles: { id: string; position: Point; zIndex: number; cards: VisibleCard[] }[]
+-  hands: { id: string; playerId: string; cards: VisibleCard[] }[]
++  looseCards: (VisibleCard & { position: Point; zIndex: number; rotation: number; spawnFrom?: Point })[]
++  piles: { id: string; position: Point; zIndex: number; rotation: number; cards: VisibleCard[] }[]
++  hands: { id: string; playerId: string; cards: VisibleCard[]; revealedCardIds: string[] }[]
+   zones: { id: string; label: string; type: 'discard'; cards: VisibleCard[] }[]
+ }
+ 
+ export type Action =
+   | { type: 'draw-table'; landingPosition: Point; spawnFrom?: Point }
+   | { type: 'draw-hand' }
++  | { type: 'deal'; recipients: string[]; cardsPerPlayer: number }
++  | { type: 'reveal-hand'; scope: 'all' | 'selected'; cardIds?: string[] }
++  | { type: 'hide-hand' }
++  | { type: 'rotate-cards'; cardIds: string[]; degrees: -90 | 90 | 180 }
+   | { type: 'move-cards'; moves: { id: string; position: Point }[]; pileId?: string }
+   | { type: 'front-card'; cardId: string }
+   | { type: 'flip-cards'; cardIds: string[] }
+   | { type: 'create-pile'; cardIds: string[] }
+   | { type: 'move-pile'; pileId: string; position: Point }
+   | { type: 'front-pile'; pileId: string }
++  | { type: 'rotate-pile'; pileId: string; degrees: -90 | 90 | 180 }
++  | { type: 'flip-pile'; pileId: string }
++  | { type: 'shuffle-pile'; pileId: string }
+   | { type: 'extract-pile'; pileId: string }
+   | { type: 'table-to-hand'; cardIds: string[] }
+   | { type: 'hand-to-table'; cardId: string; position: Point }
+@@ -75,13 +82,13 @@ function freshDeck(kind: DeckKind): Card[] {
+ export function newGame(playerId: string, deckKind: DeckKind = 'french'): Game {
+   return {
+     deckKind, version: 0, deck: freshDeck(deckKind), deckPosition: { x: 0.12, y: 0.46 },
+-    looseCards: [], piles: [], hands: [{ id: `${playerId}-hand`, playerId, cards: [] }],
++    looseCards: [], piles: [], hands: [{ id: `${playerId}-hand`, playerId, cards: [], revealedCardIds: [] }],
+     zones: [{ id: 'discard-zone', label: 'Discard', type: 'discard', cards: [] }],
+   }
+ }
+ 
+ export function addPlayer(game: Game, playerId: string) {
+-  game.hands.push({ id: `${playerId}-hand`, playerId, cards: [] })
++  game.hands.push({ id: `${playerId}-hand`, playerId, cards: [], revealedCardIds: [] })
+   game.version++
+ }
+ 
+@@ -94,12 +101,24 @@ export function viewFor(game: Game, playerId: string): GameView {
+   return {
+     deckKind: game.deckKind, version: game.version, deckCount: game.deck.length,
+     deckPosition: { ...game.deckPosition },
+-    looseCards: game.looseCards.map((card) => ({ ...visibleCard(card, card.faceUp), position: { ...card.position }, zIndex: card.zIndex, ...(card.spawnFrom ? { spawnFrom: { ...card.spawnFrom } } : {}) })),
+-    piles: game.piles.map((pile) => ({ id: pile.id, position: { ...pile.position }, zIndex: pile.zIndex, cards: pile.cards.map((card) => visibleCard(card, card.faceUp)) })),
+-    // Only the player's OWN hand is serialized. Other players' identities and card faces are omitted.
+-    hands: game.hands.filter((hand) => hand.playerId === playerId).map((hand) => ({
+-      id: hand.id, playerId: hand.playerId, cards: hand.cards.map((card) => visibleCard(card, true)),
+-    })),
++    looseCards: game.looseCards.map((card) => ({ ...visibleCard(card, card.faceUp), position: { ...card.position }, zIndex: card.zIndex, rotation: card.rotation, ...(card.spawnFrom ? { spawnFrom: { ...card.spawnFrom } } : {}) })),
++    piles: game.piles.map((pile) => ({ id: pile.id, position: { ...pile.position }, zIndex: pile.zIndex, rotation: pile.rotation, cards: pile.cards.map((card) => visibleCard(card, card.faceUp)) })),
++    // Everybody can see how many cards other hands hold, but ONLY explicitly
++    // revealed faces are transmitted. Hidden placeholders never contain card UUIDs.
++    hands: game.hands.map((hand) => {
++      const owner = hand.playerId === playerId
++      const shown = new Set(hand.revealedCardIds)
++      return {
++        id: hand.id,
++        playerId: hand.playerId,
++        revealedCardIds: owner ? [...hand.revealedCardIds] : [],
++        cards: hand.cards.map((card, index) => owner
++          ? { ...visibleCard(card, true), faceUp: true }
++          : shown.has(card.id)
++            ? { ...visibleCard(card, true), faceUp: true }
++            : { id: `hidden-${hand.playerId}-${index}`, faceUp: false }),
++      }
++    }),
+     zones: game.zones.map((zone) => ({ id: zone.id, label: zone.label, type: zone.type, cards: zone.cards.map((card) => visibleCard(card, card.faceUp)) })),
+   }
+ }
+@@ -116,12 +135,14 @@ const record = (value: unknown): value is Record<string, unknown> =>
+ const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length < 128
+ const ids = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 52 && value.every(text) && new Set(value).size === value.length
+ const clamp = (number: number) => Math.min(0.96, Math.max(0.04, number))
++const degrees = (value: unknown): value is -90 | 90 | 180 => value === -90 || value === 90 || value === 180
++const rotated = (current: number, by: number) => ((current + by) % 360 + 360) % 360
+ const maxZ = (game: Game) => Math.max(0, ...game.looseCards.map((card) => card.zIndex), ...game.piles.map((pile) => pile.zIndex))
+ const asTable = (card: TableCard): TableCard => ({ id: card.id, rank: card.rank, suit: card.suit, faceUp: card.faceUp })
+ const ownHand = (game: Game, playerId: string) => game.hands.find((hand) => hand.playerId === playerId)
+ 
+ /** The only place that mutates game state. A rejected action changes nothing. */
+-export function applyAction(game: Game, playerId: string, input: unknown): { ok: true; version: number } | { ok: false; error: string } {
++export function applyAction(game: Game, playerId: string, input: unknown, activePlayerIds?: ReadonlySet<string>): { ok: true; version: number } | { ok: false; error: string } {
+   const reject = (error: string): { ok: false; error: string } => ({ ok: false, error })
+   if (!record(input) || typeof input.type !== 'string') return reject('Invalid action.')
+   if (!ownHand(game, playerId)) return reject('Player not in this table.')
+@@ -143,7 +164,7 @@ export function applyAction(game: Game, playerId: string, input: unknown): { ok:
+       if (!game.deck.length) return reject('The deck is empty.')
+       const card = game.deck.shift()!
+       const offset = (game.looseCards.length % 3) * 0.02
+-      game.looseCards.push({ ...card, faceUp: true, position: { x: clamp(action.landingPosition.x + offset), y: clamp(action.landingPosition.y + offset) }, ...(action.spawnFrom ? { spawnFrom: action.spawnFrom as Point } : {}), zIndex: maxZ(game) + 1 })
++      game.looseCards.push({ ...card, faceUp: true, position: { x: clamp(action.landingPosition.x + offset), y: clamp(action.landingPosition.y + offset) }, rotation: 0, ...(action.spawnFrom ? { spawnFrom: action.spawnFrom as Point } : {}), zIndex: maxZ(game) + 1 })
+       break
+     }
+     case 'draw-hand': {
+@@ -151,6 +172,44 @@ export function applyAction(game: Game, playerId: string, input: unknown): { ok:
+       appendHand([{ ...game.deck.shift()!, faceUp: true }])
+       break
+     }
++    case 'deal': {
++      if (!ids(action.recipients) || !Number.isInteger(action.cardsPerPlayer)) return reject('Invalid deal.')
++      const recipients = action.recipients as string[]
++      const count = action.cardsPerPlayer as number
++      if (count < 1 || count > 52 || recipients.length * count > game.deck.length) return reject('Not enough cards in the deck.')
++      const targetHands = recipients.map((id) => ownHand(game, id))
++      if (targetHands.some((hand) => !hand) || (activePlayerIds && recipients.some((id) => !activePlayerIds.has(id)))) return reject('Unknown or disconnected recipient.')
++      // Round-robin: distribute one card to each recipient before the next round.
++      for (let n = 0; n < count; n++) {
++        for (const hand of targetHands) hand!.cards.push({ ...game.deck.shift()!, faceUp: true })
++      }
++      break
++    }
++    case 'reveal-hand': {
++      const hand = ownHand(game, playerId)!
++      if (!hand.cards.length) return reject('Your hand is empty.')
++      if (action.scope === 'all') {
++        hand.revealedCardIds = hand.cards.map((card) => card.id)
++      } else if (action.scope === 'selected') {
++        if (!ids(action.cardIds)) return reject('Select cards from your hand.')
++        const ownIds = new Set(hand.cards.map((card) => card.id))
++        if (!(action.cardIds as string[]).every((id) => ownIds.has(id))) return reject('You can only reveal your own cards.')
++        // Selecting cards replaces the previous reveal, rather than adding to it.
++        hand.revealedCardIds = [...(action.cardIds as string[])]
++      } else return reject('Invalid reveal scope.')
++      break
++    }
++    case 'hide-hand': {
++      ownHand(game, playerId)!.revealedCardIds = []
++      break
++    }
++    case 'rotate-cards': {
++      if (!ids(action.cardIds) || !degrees(action.degrees)) return reject('Invalid rotation.')
++      const cards = findCards(action.cardIds)
++      if (!cards) return reject('Card no longer on the table.')
++      for (const card of cards) card.rotation = rotated(card.rotation, action.degrees)
++      break
++    }
+     case 'move-cards': {
+       if (!Array.isArray(action.moves) || !action.moves.length || action.moves.length > 52 || !action.moves.every((move) => record(move) && text(move.id) && point(move.position))) return reject('Invalid card movement.')
+       const moves = action.moves as { id: string; position: Point }[]
+@@ -191,7 +250,7 @@ export function applyAction(game: Game, playerId: string, input: unknown): { ok:
+       const cards = findCards(action.cardIds)
+       if (!cards) return reject('Card no longer on the table.')
+       cards.sort((a, b) => a.zIndex - b.zIndex)
+-      game.piles.push({ id: randomUUID(), position: { ...cards[cards.length - 1].position }, zIndex: maxZ(game) + 1, cards: cards.map(asTable) })
++      game.piles.push({ id: randomUUID(), position: { ...cards[cards.length - 1].position }, zIndex: maxZ(game) + 1, rotation: 0, cards: cards.map(asTable) })
+       removeCards(action.cardIds)
+       break
+     }
+@@ -209,12 +268,33 @@ export function applyAction(game: Game, playerId: string, input: unknown): { ok:
+       pile.zIndex = maxZ(game) + 1
+       break
+     }
++    case 'rotate-pile': {
++      if (!text(action.pileId) || !degrees(action.degrees)) return reject('Invalid pile rotation.')
++      const pile = game.piles.find((pile) => pile.id === action.pileId)
++      if (!pile) return reject('Pile not found.')
++      pile.rotation = rotated(pile.rotation, action.degrees)
++      break
++    }
++    case 'flip-pile': {
++      if (!text(action.pileId)) return reject('Invalid pile.')
++      const pile = game.piles.find((pile) => pile.id === action.pileId)
++      if (!pile) return reject('Pile not found.')
++      for (const card of pile.cards) card.faceUp = !card.faceUp
++      break
++    }
++    case 'shuffle-pile': {
++      if (!text(action.pileId)) return reject('Invalid pile.')
++      const pile = game.piles.find((pile) => pile.id === action.pileId)
++      if (!pile) return reject('Pile not found.')
++      pile.cards = shuffle(pile.cards)
++      break
++    }
+     case 'extract-pile': {
+       if (!text(action.pileId)) return reject('Invalid pile.')
+       const pile = game.piles.find((pile) => pile.id === action.pileId)
+       if (!pile || !pile.cards.length) return reject('Pile is empty or missing.')
+       const card = pile.cards.pop()!
+-      game.looseCards.push({ ...card, position: { x: clamp(pile.position.x + 0.06), y: clamp(pile.position.y + 0.04) }, spawnFrom: pile.position, zIndex: maxZ(game) + 1 })
++      game.looseCards.push({ ...card, position: { x: clamp(pile.position.x + 0.06), y: clamp(pile.position.y + 0.04) }, spawnFrom: pile.position, rotation: pile.rotation, zIndex: maxZ(game) + 1 })
+       if (!pile.cards.length) game.piles = game.piles.filter((candidate) => candidate.id !== pile.id)
+       break
+     }
+@@ -232,7 +312,8 @@ export function applyAction(game: Game, playerId: string, input: unknown): { ok:
+       const card = hand.cards.find((card) => card.id === action.cardId)
+       if (!card) return reject('Card is not in your hand.')
+       hand.cards = hand.cards.filter((candidate) => candidate.id !== card.id)
+-      game.looseCards.push({ ...card, position: action.position, zIndex: maxZ(game) + 1 })
++      hand.revealedCardIds = hand.revealedCardIds.filter((id) => id !== card.id)
++      game.looseCards.push({ ...card, position: action.position, rotation: 0, zIndex: maxZ(game) + 1 })
+       break
+     }
+     case 'table-to-zone': {
+@@ -250,6 +331,7 @@ export function applyAction(game: Game, playerId: string, input: unknown): { ok:
+       const card = hand.cards.find((card) => card.id === action.cardId)
+       if (!card || !game.zones.some((zone) => zone.id === action.zoneId)) return reject('Card or zone not found.')
+       hand.cards = hand.cards.filter((candidate) => candidate.id !== card.id)
++      hand.revealedCardIds = hand.revealedCardIds.filter((id) => id !== card.id)
+       appendZone(action.zoneId, [card])
+       break
+     }
+@@ -257,7 +339,7 @@ export function applyAction(game: Game, playerId: string, input: unknown): { ok:
+       if (!text(action.zoneId) || !point(action.position)) return reject('Invalid zone or position.')
+       const zone = game.zones.find((zone) => zone.id === action.zoneId)
+       if (!zone || !zone.cards.length) return reject('Zone is empty or missing.')
+-      game.looseCards.push({ ...zone.cards.pop()!, position: action.position, zIndex: maxZ(game) + 1 })
++      game.looseCards.push({ ...zone.cards.pop()!, position: action.position, rotation: 0, zIndex: maxZ(game) + 1 })
+       break
+     }
+     case 'shuffle':
+@@ -268,7 +350,7 @@ export function applyAction(game: Game, playerId: string, input: unknown): { ok:
+       game.deckPosition = { x: 0.12, y: 0.46 }
+       game.looseCards = []
+       game.piles = []
+-      for (const hand of game.hands) hand.cards = []
++      for (const hand of game.hands) { hand.cards = []; hand.revealedCardIds = [] }
+       for (const zone of game.zones) zone.cards = []
+       break
+     }
+diff --git a/apps/server/src/index.ts b/apps/server/src/index.ts
+index 554535d..9c47176 100644
+--- a/apps/server/src/index.ts
++++ b/apps/server/src/index.ts
+@@ -91,7 +91,7 @@ io.on('connection', (socket) => {
+     if (!room || !playerId || !room.players.some((player) => player.id === playerId)) {
+       return ack({ ok: false, error: 'You are not in an active room.' })
+     }
+-    const result = applyAction(room.game, playerId, action)
++    const result = applyAction(room.game, playerId, action, new Set(room.players.map((player) => player.id)))
+     ack(result)
+     if (result.ok) publish(room)
+   })
+@@ -100,6 +100,8 @@ io.on('connection', (socket) => {
+     const { roomId, playerId } = socket.data
+     const room = roomId ? rooms.get(roomId) : undefined
+     if (!room || !playerId) return
++    // A departing player must not leave an orphaned public reveal on the table.
++    applyAction(room.game, playerId, { type: 'hide-hand' })
+     room.players = room.players.filter((player) => player.id !== playerId)
+     // In this first block, disconnected users lose their session. Rejoin tokens
+     // and disconnect grace periods are explicitly part of Block 3.
+@@ -107,6 +109,7 @@ io.on('connection', (socket) => {
+       rooms.delete(room.id)
+     } else {
+       io.to(room.id).emit('room:players', room.players)
++      publish(room)
+     }
+   })
+ })
+diff --git a/apps/server/test/game.test.mjs b/apps/server/test/game.test.mjs
+index 3fe588f..72e0d94 100644
+--- a/apps/server/test/game.test.mjs
++++ b/apps/server/test/game.test.mjs
+@@ -16,17 +16,18 @@ test('French 52, Italian 40, opaque IDs unique and unrelated to faces', () => {
+   }
+ })
+ 
+-test('Every client sees only their own hand; face-down cards hide rank and suit', () => {
++test('Other clients receive only anonymous hand placeholders; face-down cards hide faces', () => {
+   const game = newGame('alice')
+   addPlayer(game, 'bob')
+   assert.equal(applyAction(game, 'alice', { type: 'draw-hand' }).ok, true)
+   const alice = viewFor(game, 'alice')
+   const bob = viewFor(game, 'bob')
+-  assert.equal(alice.hands.length, 1)
+-  assert.equal(bob.hands.length, 1)
+-  assert.equal(alice.hands[0].cards.length, 1)
+-  assert.equal(bob.hands[0].cards.length, 0)
+-  const secretId = alice.hands[0].cards[0].id
++  assert.equal(alice.hands.length, 2)
++  assert.equal(bob.hands.length, 2)
++  assert.equal(alice.hands.find(h => h.playerId === 'alice').cards.length, 1)
++  assert.equal(bob.hands.find(h => h.playerId === 'alice').cards.length, 1)
++  assert.equal(bob.hands.find(h => h.playerId === 'alice').cards[0].rank, undefined)
++  const secretId = alice.hands.find(h => h.playerId === 'alice').cards[0].id
+   assert.equal(JSON.stringify(bob).includes(secretId), false)
+   assert.equal(applyAction(game, 'bob', { type: 'hand-to-table', cardId: secretId, position: validPosition }).ok, false)
+   assert.equal(applyAction(game, 'alice', { type: 'hand-to-table', cardId: secretId, position: validPosition }).ok, true)
+@@ -89,3 +90,91 @@ test('Face-down cards stay confidential inside piles and discard zones', () => {
+   assert.equal(visibleDiscard.suit, undefined)
+   assert.equal(countCards(game), 52)
+ })
++
++
++test('Deal distributes round robin, conserves cards and validates recipients/availability', () => {
++  const game = newGame('alice')
++  addPlayer(game, 'bob')
++  addPlayer(game, 'carl')
++  const firstCards = game.deck.slice(0, 9).map(card => card.id)
++  const result = applyAction(game, 'alice', { type: 'deal', recipients: ['alice', 'bob', 'carl'], cardsPerPlayer: 3 }, new Set(['alice', 'bob', 'carl']))
++  assert.equal(result.ok, true)
++  assert.equal(game.deck.length, 43)
++  assert.equal(countCards(game), 52)
++  assert.deepEqual(game.hands.find(h => h.playerId === 'alice').cards.map(c => c.id), [firstCards[0], firstCards[3], firstCards[6]])
++  assert.deepEqual(game.hands.find(h => h.playerId === 'bob').cards.map(c => c.id), [firstCards[1], firstCards[4], firstCards[7]])
++  assert.equal(viewFor(game, 'alice').hands.find(h => h.playerId === 'bob').cards[0].rank, undefined)
++  const version = game.version
++  assert.equal(applyAction(game, 'alice', { type: 'deal', recipients: ['alice', 'nobody'], cardsPerPlayer: 2 }).ok, false)
++  assert.equal(applyAction(game, 'alice', { type: 'deal', recipients: ['alice', 'bob'], cardsPerPlayer: 25 }).ok, false)
++  assert.equal(applyAction(game, 'alice', { type: 'deal', recipients: ['bob'], cardsPerPlayer: 1 }, new Set(['alice'])).ok, false)
++  assert.equal(game.version, version)
++  assert.equal(countCards(game), 52)
++})
++
++test('Reveal selected/entire hand and hide: only owner controls visibility, future draws stay private', () => {
++  const game = newGame('alice')
++  addPlayer(game, 'bob')
++  assert.equal(applyAction(game, 'alice', { type: 'deal', recipients: ['alice'], cardsPerPlayer: 3 }).ok, true)
++  const aliceIds = game.hands[0].cards.map(c => c.id)
++  const before = viewFor(game, 'bob').hands.find(h => h.playerId === 'alice')
++  assert.equal(before.cards.length, 3)
++  assert.ok(before.cards.every(c => !c.rank && !aliceIds.includes(c.id)))
++
++  const previousVersion = game.version
++  assert.equal(applyAction(game, 'bob', { type: 'reveal-hand', scope: 'selected', cardIds: [aliceIds[0]] }).ok, false)
++  assert.equal(applyAction(game, 'alice', { type: 'reveal-hand', scope: 'selected', cardIds: ['fake'] }).ok, false)
++  assert.equal(game.version, previousVersion)
++  assert.equal(applyAction(game, 'alice', { type: 'reveal-hand', scope: 'selected', cardIds: [aliceIds[0], aliceIds[2]] }).ok, true)
++  let bobView = viewFor(game, 'bob').hands.find(h => h.playerId === 'alice')
++  assert.deepEqual(bobView.cards.filter(c => c.rank).map(c => c.id), [aliceIds[0], aliceIds[2]])
++  assert.equal(bobView.cards[1].rank, undefined)
++  assert.equal(applyAction(game, 'alice', { type: 'reveal-hand', scope: 'all' }).ok, true)
++  assert.equal(viewFor(game, 'bob').hands.find(h => h.playerId === 'alice').cards.filter(c => c.rank).length, 3)
++
++  assert.equal(applyAction(game, 'alice', { type: 'draw-hand' }).ok, true)
++  bobView = viewFor(game, 'bob').hands.find(h => h.playerId === 'alice')
++  assert.equal(bobView.cards.length, 4)
++  assert.equal(bobView.cards.filter(c => c.rank).length, 3)
++  assert.equal(bobView.cards[3].rank, undefined)
++  assert.equal(applyAction(game, 'alice', { type: 'hide-hand' }).ok, true)
++  assert.ok(viewFor(game, 'bob').hands.find(h => h.playerId === 'alice').cards.every(c => c.rank === undefined))
++  assert.equal(countCards(game), 52)
++})
++
++test('Revealed cards stop being shared when played, discarded or table resets', () => {
++  const game = newGame('alice')
++  addPlayer(game, 'bob')
++  applyAction(game, 'alice', { type: 'draw-hand' })
++  applyAction(game, 'alice', { type: 'draw-hand' })
++  const [first, second] = game.hands[0].cards.map(c => c.id)
++  applyAction(game, 'alice', { type: 'reveal-hand', scope: 'all' })
++  assert.equal(applyAction(game, 'alice', { type: 'hand-to-table', cardId: first, position: validPosition }).ok, true)
++  assert.equal(viewFor(game, 'bob').hands[0].cards.filter(c => c.rank).length, 1)
++  assert.equal(applyAction(game, 'alice', { type: 'hand-to-zone', cardId: second, zoneId: 'discard-zone' }).ok, true)
++  assert.equal(viewFor(game, 'bob').hands[0].cards.length, 0)
++  assert.equal(game.hands[0].revealedCardIds.length, 0)
++  applyAction(game, 'alice', { type: 'reset' })
++  assert.equal(game.hands[0].revealedCardIds.length, 0)
++  assert.equal(countCards(game), 52)
++})
++
++test('Rotate selected table cards and piles, flip and shuffle piles without changing total', () => {
++  const game = newGame('alice')
++  applyAction(game, 'alice', { type: 'draw-table', landingPosition: validPosition })
++  applyAction(game, 'alice', { type: 'draw-table', landingPosition: validPosition })
++  const cardIds = game.looseCards.map(c => c.id)
++  assert.equal(applyAction(game, 'alice', { type: 'rotate-cards', cardIds, degrees: 90 }).ok, true)
++  assert.ok(game.looseCards.every(c => c.rotation === 90))
++  assert.equal(applyAction(game, 'alice', { type: 'rotate-cards', cardIds, degrees: 8 }).ok, false)
++  applyAction(game, 'alice', { type: 'create-pile', cardIds })
++  const pileId = game.piles[0].id
++  assert.equal(applyAction(game, 'alice', { type: 'rotate-pile', pileId, degrees: 90 }).ok, true)
++  assert.equal(game.piles[0].rotation, 90)
++  assert.equal(applyAction(game, 'alice', { type: 'flip-pile', pileId }).ok, true)
++  assert.ok(game.piles[0].cards.every(card => !card.faceUp))
++  assert.equal(applyAction(game, 'alice', { type: 'shuffle-pile', pileId }).ok, true)
++  assert.equal(countCards(game), 52)
++  assert.equal(viewFor(game, 'alice').piles[0].rotation, 90)
++  assert.ok(viewFor(game, 'alice').piles[0].cards.every(c => c.rank === undefined))
++})
+diff --git a/apps/server/test/socket.test.mjs b/apps/server/test/socket.test.mjs
+index 7eb5032..0e1aaed 100644
+--- a/apps/server/test/socket.test.mjs
++++ b/apps/server/test/socket.test.mjs
+@@ -12,6 +12,17 @@ const connect = (url) => new Promise((resolve, reject) => {
+ })
+ const ack = (client, event, ...args) => client.timeout(1500).emitWithAck(event, ...args)
+ const nextState = (client) => new Promise((resolve) => client.once('table:state', resolve))
++const stateAtLeast = (client, version) => new Promise((resolve, reject) => {
++  const timer = setTimeout(() => { client.off('table:state', onState); reject(new Error(`Timed out waiting for state version ${version}`)) }, 1500)
++  function onState(state) {
++    if (state.version >= version) {
++      clearTimeout(timer)
++      client.off('table:state', onState)
++      resolve(state)
++    }
++  }
++  client.on('table:state', onState)
++})
+ 
+ test('Two real Socket.IO clients: room and draw synchronized, hands kept private', async (t) => {
+   const port = randomInt(31000, 39000)
+@@ -41,15 +52,16 @@ test('Two real Socket.IO clients: room and draw synchronized, hands kept private
+   const [aView, bView] = await Promise.all([aNext, bNext])
+   assert.equal(aView.deckCount, 51)
+   assert.equal(bView.deckCount, 51)
+-  assert.equal(aView.hands.length, 1)
+-  assert.equal(aView.hands[0].cards.length, 1)
+-  assert.equal(bView.hands.length, 1)
+-  assert.equal(bView.hands[0].cards.length, 0)
+-  assert.equal(JSON.stringify(bView).includes(aView.hands[0].cards[0].id), false)
+-  assert.equal((await ack(b, 'table:action', { type: 'hand-to-table', cardId: aView.hands[0].cards[0].id, position: { x: .5, y: .5 } })).ok, false)
+-  assert.equal((await ack(a, 'table:action', { type: 'hand-to-table', cardId: aView.hands[0].cards[0].id, position: { x: .5, y: .5 } })).ok, true)
+-  assert.equal((await ack(b, 'table:action', { type: 'flip-cards', cardIds: [aView.hands[0].cards[0].id] })).ok, true)
+-  const hidden = await nextStateAfterAction(b, ack(b, 'table:action', { type: 'move-cards', moves: [{ id: aView.hands[0].cards[0].id, position: { x: .4, y: .4 } }] }))
++  assert.equal(aView.hands.length, 2)
++  assert.equal(aView.hands.find(h => h.playerId === room.playerId).cards.length, 1)
++  assert.equal(bView.hands.length, 2)
++  assert.equal(bView.hands.find(h => h.playerId === room.playerId).cards.length, 1)
++  assert.equal(bView.hands.find(h => h.playerId === room.playerId).cards[0].rank, undefined)
++  assert.equal(JSON.stringify(bView).includes(aView.hands.find(h => h.playerId === room.playerId).cards[0].id), false)
++  assert.equal((await ack(b, 'table:action', { type: 'hand-to-table', cardId: aView.hands.find(h => h.playerId === room.playerId).cards[0].id, position: { x: .5, y: .5 } })).ok, false)
++  assert.equal((await ack(a, 'table:action', { type: 'hand-to-table', cardId: aView.hands.find(h => h.playerId === room.playerId).cards[0].id, position: { x: .5, y: .5 } })).ok, true)
++  assert.equal((await ack(b, 'table:action', { type: 'flip-cards', cardIds: [aView.hands.find(h => h.playerId === room.playerId).cards[0].id] })).ok, true)
++  const hidden = await nextStateAfterAction(b, ack(b, 'table:action', { type: 'move-cards', moves: [{ id: aView.hands.find(h => h.playerId === room.playerId).cards[0].id, position: { x: .4, y: .4 } }] }))
+   assert.equal(hidden.looseCards[0].faceUp, false)
+   assert.equal(hidden.looseCards[0].rank, undefined)
+   assert.equal(hidden.looseCards[0].suit, undefined)
+@@ -60,3 +72,41 @@ async function nextStateAfterAction(client, command) {
+   await command
+   return state
+ }
++
++
++test('Socket.IO: revealed cards are visible only on explicit owner action, and hidden again on request', async (t) => {
++  const port = randomInt(31000, 39000)
++  const url = `http://127.0.0.1:${port}`
++  const server = spawn(process.execPath, ['apps/server/dist/index.js'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port) }, stdio: 'pipe' })
++  t.after(() => server.kill())
++  let a, b
++  t.after(() => { a?.disconnect(); b?.disconnect() })
++  let lastError
++  for (let attempt = 0; attempt < 30; attempt++) {
++    try { a = await connect(url); break }
++    catch (error) { lastError = error; await pause(75) }
++  }
++  if (!a) throw lastError
++  b = await connect(url)
++  const room = await ack(a, 'room:create', 'french')
++  assert.equal(room.ok, true)
++  const join = await ack(b, 'room:join', room.roomId)
++  assert.equal(join.ok, true)
++  const aDeal = stateAtLeast(a, join.table.version + 1)
++  let bNext = stateAtLeast(b, join.table.version + 1)
++  assert.equal((await ack(a, 'table:action', { type: 'deal', recipients: [room.playerId, join.playerId], cardsPerPlayer: 2 })).ok, true)
++  const aliceView = await aDeal
++  let bState = await bNext
++  const firstHand = bState.hands.find(h => h.playerId === room.playerId)
++  assert.equal(firstHand.cards.filter(c => c.rank).length, 0)
++  const shownId = aliceView.hands.find(h => h.playerId === room.playerId).cards[0].id
++  bNext = stateAtLeast(b, aliceView.version + 1)
++  assert.equal((await ack(a, 'table:action', { type: 'reveal-hand', scope: 'selected', cardIds: [shownId] })).ok, true)
++  bState = await bNext
++  assert.equal(bState.hands.find(h => h.playerId === room.playerId).cards.filter(c => c.rank).length, 1)
++  assert.equal((await ack(b, 'table:action', { type: 'reveal-hand', scope: 'selected', cardIds: [shownId] })).ok, false)
++  bNext = stateAtLeast(b, bState.version + 1)
++  assert.equal((await ack(a, 'table:action', { type: 'hide-hand' })).ok, true)
++  bState = await bNext
++  assert.equal(bState.hands.find(h => h.playerId === room.playerId).cards.filter(c => c.rank).length, 0)
++})
+diff --git a/apps/web/src/components/card/CardCollectionDialog.tsx b/apps/web/src/components/card/CardCollectionDialog.tsx
+index 84774f9..040b4e8 100644
+--- a/apps/web/src/components/card/CardCollectionDialog.tsx
++++ b/apps/web/src/components/card/CardCollectionDialog.tsx
+@@ -8,6 +8,9 @@ type CardCollectionDialogProps = {
+   cards: TableCard[]
+   onClose: () => void
+   onExtractTopCard?: () => void
++  onFlipPile?: () => void
++  onRotatePile?: () => void
++  onShufflePile?: () => void
+ }
+ 
+ export function CardCollectionDialog({
+@@ -15,6 +18,9 @@ export function CardCollectionDialog({
+   cards,
+   onClose,
+   onExtractTopCard,
++  onFlipPile,
++  onRotatePile,
++  onShufflePile,
+ }: CardCollectionDialogProps) {
+   const count = cards.length
+ 
+@@ -75,8 +81,11 @@ export function CardCollectionDialog({
+           </ol>
+         </div>
+ 
+-        {onExtractTopCard && count > 0 && (
+-          <div className="flex items-center justify-end gap-3 border-t border-white/[0.07] px-6 py-4">
++        {(onExtractTopCard || onFlipPile || onRotatePile || onShufflePile) && count > 0 && (
++          <div className="flex flex-wrap items-center justify-end gap-3 border-t border-white/[0.07] px-6 py-4">
++            {onFlipPile && <button type="button" onClick={onFlipPile} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Flip pile</button>}
++            {onRotatePile && <button type="button" onClick={onRotatePile} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Rotate 90°</button>}
++            {onShufflePile && <button type="button" onClick={() => { onShufflePile(); onClose() }} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Shuffle pile</button>}
+             <button
+               type="button"
+               onClick={onClose}
+@@ -84,13 +93,13 @@ export function CardCollectionDialog({
+             >
+               Close
+             </button>
+-            <button
++            {onExtractTopCard && <button
+               type="button"
+               onClick={onExtractTopCard}
+               className="h-9 rounded-md bg-ivory px-4 text-sm font-semibold text-ink transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
+             >
+               Take the top card
+-            </button>
++            </button>}
+           </div>
+         )}
+       </motion.div>
+diff --git a/apps/web/src/components/card/PlayingCard.tsx b/apps/web/src/components/card/PlayingCard.tsx
+index 032e4de..e7fcd3e 100644
+--- a/apps/web/src/components/card/PlayingCard.tsx
++++ b/apps/web/src/components/card/PlayingCard.tsx
+@@ -14,6 +14,7 @@ type PlayingCardProps = {
+   spawnPosition?: NormalizedPosition
+   zIndex: number
+   faceUp: boolean
++  rotation: number
+   selected: boolean
+   onPositionCommit: (position: NormalizedPosition) => void
+   onDragStart: () => void
+@@ -52,6 +53,7 @@ export function PlayingCard({
+   spawnPosition,
+   zIndex,
+   faceUp,
++  rotation,
+   selected,
+   onPositionCommit,
+   onDragStart,
+@@ -146,7 +148,7 @@ export function PlayingCard({
+         if (!isAdditive(event)) onSelectOnly()
+       }}
+       onDoubleClick={onFlip}
+-      style={{ x, y, zIndex, rotate: tilt, boxShadow: restingShadow }}
++      style={{ x, y, zIndex, rotate: rotation + tilt, boxShadow: restingShadow }}
+       initial={{ opacity: 0, scale: 0.92 }}
+       animate={{ opacity: 1, scale: 1 }}
+       transition={{ duration: 0.2 }}
+diff --git a/apps/web/src/components/hand/HandView.tsx b/apps/web/src/components/hand/HandView.tsx
+index 89c0f7c..31b5075 100644
+--- a/apps/web/src/components/hand/HandView.tsx
++++ b/apps/web/src/components/hand/HandView.tsx
+@@ -12,12 +12,16 @@ type HandViewProps = {
+     cardId: string,
+     position: NormalizedPosition
+   ) => void
++  selectedCardIds: string[]
++  onToggleCardSelection: (cardId: string) => void
+ }
+ 
+ export function HandView({
+   hand,
+   tableRef,
+   onDropCard,
++  selectedCardIds,
++  onToggleCardSelection,
+ }: HandViewProps) {
+   const count = hand.cards.length
+   const centerIndex = (count - 1) / 2
+@@ -35,12 +39,16 @@ export function HandView({
+   }
+ 
+   return (
+-    <section aria-label={`Your hand, ${count} cards`} className="flex h-48 items-end justify-center">
++    <section aria-label={`Your hand, ${count} cards`} className="relative flex h-48 items-end justify-center">
++      <p className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-black/30 px-2 py-1 text-[11px] text-ivory/70">
++        Tap cards to select · {selectedCardIds.length} selected · drag to play
++      </p>
+       {hand.cards.map((card, index) => {
+         const offsetFromCenter = index - centerIndex
+         const distance = centerIndex === 0 ? 0 : offsetFromCenter / centerIndex
+         const rotate = offsetFromCenter * spread
+         const arc = distance * distance * 18
++        const selected = selectedCardIds.includes(card.id)
+ 
+         return (
+           <motion.div
+@@ -49,6 +57,9 @@ export function HandView({
+             dragSnapToOrigin
+             dragMomentum={false}
+             whileDrag={{ scale: 1.06, zIndex: 300 }}
++            onTap={() => onToggleCardSelection(card.id)}
++            aria-label={`Select card ${card.rank ?? ''} ${card.suit ?? ''}`}
++            aria-pressed={selected}
+             className="h-40 w-28 shrink-0 cursor-grab touch-none active:cursor-grabbing"
+             style={{
+               zIndex: 100 + index,
+@@ -78,10 +89,10 @@ export function HandView({
+             }}
+           >
+             <motion.div
+-              className="h-full w-full origin-bottom"
++              className={`h-full w-full origin-bottom rounded-md ${selected ? "outline-2 outline-offset-2 outline-gold" : ""}`}
+               initial={false}
+-              animate={{ rotate, y: arc }}
+-              whileHover={{ y: arc - 22 }}
++              animate={{ rotate, y: arc - (selected ? 24 : 0) }}
++              whileHover={{ y: arc - (selected ? 32 : 22) }}
+               transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+             >
+               {card.faceUp && card.rank && card.suit ? (
+diff --git a/apps/web/src/components/hand/RevealedHands.tsx b/apps/web/src/components/hand/RevealedHands.tsx
+new file mode 100644
+index 0000000..285db69
+--- /dev/null
++++ b/apps/web/src/components/hand/RevealedHands.tsx
+@@ -0,0 +1,30 @@
++import type { Hand } from '../../types/hand'
++import type { Player } from '../../types/player'
++
++export function RevealedHands({ hands, players, selfId }: { hands: Hand[]; players: Player[]; selfId: string }) {
++  const sharing = hands.filter((hand) => hand.playerId !== selfId && hand.cards.some((card) => card.rank && card.suit))
++  if (!sharing.length) return null
++
++  return (
++    <aside aria-label="Cards revealed by other players" className="pointer-events-auto absolute top-[4.5rem] left-5 z-30 max-w-[min(35rem,75vw)] space-y-2 md:left-8">
++      {sharing.map((hand) => {
++        const shown = hand.cards.filter((card) => card.rank && card.suit)
++        const hiddenCount = hand.cards.length - shown.length
++        const name = players.find((player) => player.id === hand.playerId)?.name ?? 'Player'
++        return (
++          <div key={hand.id} className="max-w-full rounded-lg border border-white/15 bg-black/50 p-2 shadow-xl backdrop-blur-sm">
++            <div className="mb-2 text-xs font-medium text-ivory/85">{name} is showing {shown.length} {shown.length === 1 ? 'card' : 'cards'}{hiddenCount ? ` · ${hiddenCount} hidden` : ''}</div>
++            <div className="flex max-w-full gap-1.5 overflow-x-auto pb-1">
++              {shown.map((card) => (
++                <div key={card.id} className="flex h-14 w-10 shrink-0 flex-col items-center justify-center rounded border border-ivory/50 bg-ivory text-ink shadow-md">
++                  <span className="font-display text-sm leading-none font-bold">{card.rank}</span>
++                  <span className="mt-1 text-[10px] leading-none">{card.suit}</span>
++                </div>
++              ))}
++            </div>
++          </div>
++        )
++      })}
++    </aside>
++  )
++}
+diff --git a/apps/web/src/components/pile/PileView.tsx b/apps/web/src/components/pile/PileView.tsx
+index 8b8c50a..19a5fd3 100644
+--- a/apps/web/src/components/pile/PileView.tsx
++++ b/apps/web/src/components/pile/PileView.tsx
+@@ -59,7 +59,7 @@ export function PileView({
+       onDragStart={() => { didDrag.current = true, onDragStart()}}
+       onDragEnd={handleDragEnd}
+       onTap={() => {if (!didDrag.current) onOpen()}}
+-      style={{ x, y, zIndex: pile.zIndex }}
++      style={{ x, y, zIndex: pile.zIndex, rotate: pile.rotation }}
+       className="group absolute top-1/2 left-1/2 h-40 w-28 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none select-none active:cursor-grabbing"
+       aria-label={`Pile of ${pile.cards.length} cards. Click to look through it.`}
+     >
+diff --git a/apps/web/src/components/table/DealCardsDialog.tsx b/apps/web/src/components/table/DealCardsDialog.tsx
+new file mode 100644
+index 0000000..1813aeb
+--- /dev/null
++++ b/apps/web/src/components/table/DealCardsDialog.tsx
+@@ -0,0 +1,45 @@
++import { useState } from 'react'
++import type { Player } from '../../types/player'
++
++export function DealCardsDialog({ players, deckCount, onDeal, onClose }: {
++  players: Player[]
++  deckCount: number
++  onDeal: (recipients: string[], cardsPerPlayer: number) => void
++  onClose: () => void
++}) {
++  const [recipients, setRecipients] = useState<string[]>(players.map((player) => player.id))
++  const [countInput, setCountInput] = useState('1')
++  const count = Number(countInput)
++  const valid = recipients.length > 0 && Number.isInteger(count) && count > 0 && count <= 52 && recipients.length * count <= deckCount
++
++  return (
++    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
++      <div role="dialog" aria-modal="true" aria-label="Deal cards" className="w-[min(26rem,95vw)] space-y-5 rounded-xl border border-white/10 bg-[#161816] p-6 text-ivory shadow-2xl">
++        <div>
++          <h2 className="font-display text-2xl font-semibold">Deal cards</h2>
++          <p className="mt-1 text-sm text-ivory/60">Deal from the deck, one card at a time, to each chosen player.</p>
++        </div>
++        <label className="block text-sm text-ivory/90">
++          Cards per player
++          <input type="number" min="1" max="52" inputMode="numeric" value={countInput} onChange={(event) => setCountInput(event.target.value)} className="mt-2 block h-10 w-full rounded-md border border-white/20 bg-black/25 px-3 text-ivory outline-none focus:border-gold" />
++        </label>
++        <fieldset className="space-y-2">
++          <legend className="mb-2 text-sm text-ivory/90">Recipients</legend>
++          {players.map((player) => (
++            <label key={player.id} className="flex cursor-pointer items-center gap-3 text-sm text-ivory/80">
++              <input type="checkbox" checked={recipients.includes(player.id)} onChange={(event) => setRecipients((current) => event.target.checked ? [...current, player.id] : current.filter((id) => id !== player.id))} className="accent-amber-300" />
++              {player.name}
++            </label>
++          ))}
++        </fieldset>
++        <p className={`text-xs ${valid ? 'text-ivory/65' : 'text-[#e08a80]'}`}>
++          {valid ? `${recipients.length * count} of ${deckCount} available cards will be dealt.` : `${deckCount} cards available. Select players and a valid number of cards.`}
++        </p>
++        <div className="flex justify-end gap-2">
++          <button type="button" onClick={onClose} className="rounded-md px-4 py-2 text-sm text-ivory/70 hover:text-ivory">Cancel</button>
++          <button type="button" disabled={!valid} onClick={() => { onDeal(recipients, count); onClose() }} className="rounded-md bg-ivory px-4 py-2 text-sm font-semibold text-ink disabled:opacity-35">Deal</button>
++        </div>
++      </div>
++    </div>
++  )
++}
+diff --git a/apps/web/src/components/table/TableSurface.tsx b/apps/web/src/components/table/TableSurface.tsx
+index fb9f3fe..ec4ec89 100644
+--- a/apps/web/src/components/table/TableSurface.tsx
++++ b/apps/web/src/components/table/TableSurface.tsx
+@@ -8,6 +8,8 @@ import { CardCollectionDialog } from '../card/CardCollectionDialog'
+ import { PlayingCard } from '../card/PlayingCard'
+ import { DeckPile } from '../deck/DeckPile'
+ import { HandView } from '../hand/HandView'
++import { RevealedHands } from '../hand/RevealedHands'
++import { DealCardsDialog } from './DealCardsDialog'
+ import { PileView } from '../pile/PileView'
+ import { Kbd } from '../shared/Kbd'
+ import { Wordmark } from '../shared/Wordmark'
+@@ -24,7 +26,7 @@ type TableSurfaceProps = {
+   initialTableState: TableGameState
+ }
+ 
+-type TableAction = 'move-deck' | 'shuffle' | 'create-pile' | 'flip-selected' | 'reset'
++type TableAction = 'move-deck' | 'shuffle' | 'create-pile' | 'flip-selected' | 'rotate-selected' | 'show-hand-all' | 'show-hand-selected' | 'hide-hand' | 'deal' | 'reset'
+ 
+ const CARD_WIDTH = 112
+ 
+@@ -45,11 +47,16 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+     title: string
+     cards: TableCard[]
+     onExtractTopCard?: () => void
++    onFlipPile?: () => void
++    onRotatePile?: () => void
++    onShufflePile?: () => void
+   } | null>(null)
+   const [notice, setNotice] = useState<{ id: number, text: string } | null>(null)
+   const [actionMenuOpen, setActionMenuOpen] = useState(false)
+   const [confirmingReset, setConfirmingReset] = useState(false)
+   const [isMovingDeck, setIsMovingDeck] = useState(false)
++  const [dealingOpen, setDealingOpen] = useState(false)
++  const [selectedHandCardIds, setSelectedHandCardIds] = useState<string[]>([])
+ 
+   const deckX = useMotionValue(0)
+   const deckY = useMotionValue(0)
+@@ -66,6 +73,11 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+     flipSelectedCards,
+     moveDeck,
+     drawCardToHand,
++    dealCards,
++    revealEntireHand,
++    revealSelectedHandCards,
++    hideRevealedHandCards,
++    rotateSelectedCards,
+     playCardFromHand,
+     moveLooseCardToHand,
+     moveLooseCardToZone,
+@@ -77,6 +89,9 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+     moveSelectedCards,
+     updatePilePosition,
+     bringPileToFront,
++    rotatePile,
++    flipPile,
++    shufflePile,
+     extractTopCardFromPile,
+     moveLooseCardOrAddToPile,
+     moveSelectedCardsOrAddToPile,
+@@ -94,6 +109,14 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+   const discardZone = zones.find((zone) => zone.id === 'discard-zone')
+   const canCreatePile = selectedCardIds.length >= 2
+   const canFlipSelected = selectedCardIds.length > 0
++  const canShowHand = !!playerHand?.cards.length
++  const isShowingHand = !!playerHand?.revealedCardIds.length
++  const canShowSelected = selectedHandCardIds.length > 0
++
++  useEffect(() => {
++    const currentIds = new Set(playerHand?.cards.map((card) => card.id) ?? [])
++    setSelectedHandCardIds((selected) => selected.filter((id) => currentIds.has(id)))
++  }, [playerHand?.cards])
+ 
+   function notify(text: string) {
+     noticeId.current += 1
+@@ -174,10 +197,31 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+           notify('Select a card first')
+           return
+         }
+-
+         flipSelectedCards()
+         notify(selectedCardIds.length === 1 ? 'Card flipped' : `${selectedCardIds.length} cards flipped`)
+         return
++      case 'rotate-selected':
++        if (!canFlipSelected) return
++        rotateSelectedCards()
++        notify(`${selectedCardIds.length} cards rotated`)
++        return
++      case 'deal':
++        setDealingOpen(true)
++        return
++      case 'show-hand-all':
++        if (!canShowHand) return
++        revealEntireHand()
++        notify('Entire hand shown to other players')
++        return
++      case 'show-hand-selected':
++        if (!canShowSelected) return
++        revealSelectedHandCards(selectedHandCardIds)
++        notify(`${selectedHandCardIds.length} hand cards shown`)
++        return
++      case 'hide-hand':
++        hideRevealedHandCards()
++        notify('Hand display hidden')
++        return
+       case 'reset':
+         resetGame()
+         setIsMovingDeck(false)
+@@ -205,6 +249,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+       if (key === 'escape') {
+         closeActionMenu()
+         setOpenCollection(null)
++        setDealingOpen(false)
+         setIsMovingDeck(false)
+         return
+       }
+@@ -214,6 +259,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+       if (key === 'p') runAction('create-pile')
+       if (key === 'f') runAction('flip-selected')
+       if (key === 's') runAction('shuffle')
++      if (key === 'r') runAction('rotate-selected')
+     }
+ 
+     window.addEventListener('keydown', handleKeyDown)
+@@ -320,7 +366,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+                   animate={{ opacity: 1, y: 0 }}
+                   exit={{ opacity: 0, y: -4 }}
+                   transition={{ duration: 0.12 }}
+-                  className="absolute top-full right-0 mt-2 w-60 rounded-lg border border-white/10 bg-[#141614]/95 p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)] backdrop-blur-sm"
++                  className="absolute top-full right-0 mt-2 max-h-[min(76dvh,37rem)] w-60 overflow-y-auto rounded-lg border border-white/10 bg-[#141614]/95 p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)] backdrop-blur-sm"
+                 >
+                   <MenuItem shortcut="S" onClick={() => handleMenuAction('shuffle')}>
+                     Shuffle deck
+@@ -331,9 +377,25 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+                   <MenuItem shortcut="F" disabled={!canFlipSelected} onClick={() => handleMenuAction('flip-selected')}>
+                     Flip selected
+                   </MenuItem>
++                  <MenuItem shortcut="R" disabled={!canFlipSelected} onClick={() => handleMenuAction('rotate-selected')}>
++                    Rotate selected 90°
++                  </MenuItem>
+                   <MenuItem onClick={() => handleMenuAction('move-deck')}>
+                     Move deck
+                   </MenuItem>
++                  <MenuItem disabled={deckCount === 0 || players.length === 0} onClick={() => handleMenuAction('deal')}>
++                    Deal cards…
++                  </MenuItem>
++                  <div className="mx-2 my-1.5 h-px bg-white/10" />
++                  <MenuItem disabled={!canShowHand} onClick={() => handleMenuAction('show-hand-all')}>
++                    Show entire hand
++                  </MenuItem>
++                  <MenuItem disabled={!canShowSelected} onClick={() => handleMenuAction('show-hand-selected')}>
++                    Show selected hand cards
++                  </MenuItem>
++                  <MenuItem disabled={!isShowingHand} onClick={() => handleMenuAction('hide-hand')}>
++                    Hide revealed cards
++                  </MenuItem>
+                   <div className="mx-2 my-1.5 h-px bg-white/10" />
+                   <MenuItem destructive onClick={() => handleMenuAction('reset')}>
+                     {confirmingReset ? 'Click again to clear the table' : 'Reset table'}
+@@ -344,6 +406,8 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+           </div>
+         </header>
+ 
++        <RevealedHands hands={hands} players={players} selfId={currentPlayerId} />
++
+         <div className="pointer-events-none absolute top-5 left-1/2 z-50 -translate-x-1/2 md:top-7">
+           <AnimatePresence mode="wait">
+             {isMovingDeck ? (
+@@ -412,6 +476,9 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+                 setOpenCollection({
+                   title: 'Pile',
+                   cards: pile.cards,
++                  onRotatePile: () => { rotatePile(pile.id); setOpenCollection(null) },
++                  onFlipPile: () => { flipPile(pile.id); setOpenCollection(null) },
++                  onShufflePile: () => shufflePile(pile.id),
+                   onExtractTopCard: () => {
+                     extractTopCardFromPile(pile.id)
+                     setOpenCollection(null)
+@@ -427,6 +494,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+               rank={card.rank}
+               suit={card.suit}
+               faceUp={card.faceUp}
++              rotation={card.rotation}
+               dragConstraintsRef={tableRef}
+               tableSize={tableSize}
+               position={card.position}
+@@ -490,6 +558,8 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+               key={hand.id}
+               hand={hand}
+               tableRef={tableRef}
++              selectedCardIds={selectedHandCardIds}
++              onToggleCardSelection={(id) => setSelectedHandCardIds((selected) => selected.includes(id) ? selected.filter((cardId) => cardId !== id) : [...selected, id])}
+               onDropCard={(cardId, position) => {
+                 // Dropped back onto the hand: let it snap back into place.
+                 if (isPositionInside(handRef.current, position)) return
+@@ -505,12 +575,19 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+           ))}
+         </div>
+ 
++        {dealingOpen && (
++          <DealCardsDialog players={players} deckCount={deckCount} onDeal={dealCards} onClose={() => setDealingOpen(false)} />
++        )}
++
+         {openCollection && (
+           <CardCollectionDialog
+             title={openCollection.title}
+             cards={openCollection.cards}
+             onClose={() => setOpenCollection(null)}
+             onExtractTopCard={openCollection.onExtractTopCard}
++            onFlipPile={openCollection.onFlipPile}
++            onRotatePile={openCollection.onRotatePile}
++            onShufflePile={openCollection.onShufflePile}
+           />
+         )}
+       </section>
+diff --git a/apps/web/src/hooks/useTableGame.ts b/apps/web/src/hooks/useTableGame.ts
+index ef2b737..d7dc8a3 100644
+--- a/apps/web/src/hooks/useTableGame.ts
++++ b/apps/web/src/hooks/useTableGame.ts
+@@ -89,12 +89,20 @@ export function useTableGame(initial: TableGameState, onError: (message: string)
+     moveSelectedCardsOrAddToPile: (id: string, pos: NormalizedPosition) => commitMovement(id, pos, true),
+     drawCard: (landingPosition: NormalizedPosition, spawnFrom?: NormalizedPosition) => request({ type: 'draw-table', landingPosition, spawnFrom }),
+     drawCardToHand: () => request({ type: 'draw-hand' }),
++    dealCards: (recipients: string[], cardsPerPlayer: number) => request({ type: 'deal', recipients, cardsPerPlayer }),
++    revealEntireHand: () => request({ type: 'reveal-hand', scope: 'all' }),
++    revealSelectedHandCards: (cardIds: string[]) => request({ type: 'reveal-hand', scope: 'selected', cardIds }),
++    hideRevealedHandCards: () => request({ type: 'hide-hand' }),
++    rotateSelectedCards: () => request({ type: 'rotate-cards', cardIds: selectedCardIds, degrees: 90 }),
+     bringLooseCardToFront: (cardId: string) => request({ type: 'front-card', cardId }),
+     flipCard: (cardId: string) => request({ type: 'flip-cards', cardIds: [cardId] }),
+     flipSelectedCards: () => request({ type: 'flip-cards', cardIds: selectedCardIds }),
+     createPileFromSelection: () => { if (selectedCardIds.length >= 2) request({ type: 'create-pile', cardIds: selectedCardIds }); clearSelection() },
+     updatePilePosition: (pileId: string, position: NormalizedPosition) => request({ type: 'move-pile', pileId, position }),
+     bringPileToFront: (pileId: string) => request({ type: 'front-pile', pileId }),
++    rotatePile: (pileId: string) => request({ type: 'rotate-pile', pileId, degrees: 90 }),
++    flipPile: (pileId: string) => request({ type: 'flip-pile', pileId }),
++    shufflePile: (pileId: string) => request({ type: 'shuffle-pile', pileId }),
+     extractTopCardFromPile: (pileId: string) => request({ type: 'extract-pile', pileId }),
+     moveLooseCardToHand: (cardId: string) => tableToHand([cardId]),
+     moveSelectedCardsToHand: () => tableToHand(selectedCardIds),
+diff --git a/apps/web/src/types/card.ts b/apps/web/src/types/card.ts
+index 97cf5ad..35d2a9c 100644
+--- a/apps/web/src/types/card.ts
++++ b/apps/web/src/types/card.ts
+@@ -25,5 +25,6 @@ export type TableCard = {
+ // position is the card's centre, normalised to the table size.
+ // spawnFrom, when set, is where the card slides in from on first render.
+ export type LooseCard = TableCard & TableObjectState & {
++  rotation: number
+   spawnFrom?: NormalizedPosition
+ }
+\ No newline at end of file
+diff --git a/apps/web/src/types/game.ts b/apps/web/src/types/game.ts
+index c9e12e7..fefa47a 100644
+--- a/apps/web/src/types/game.ts
++++ b/apps/web/src/types/game.ts
+@@ -12,6 +12,6 @@ export type TableGameState = {
+   deckPosition: NormalizedPosition
+   looseCards: LooseCard[]
+   piles: Pile[]
+-  hands: Hand[] // only the current player's own hand
++  hands: Hand[] // own cards + public placeholders/reveals for other players
+   zones: Zone[]
+ }
+diff --git a/apps/web/src/types/hand.ts b/apps/web/src/types/hand.ts
+index 13781c8..84a4abf 100644
+--- a/apps/web/src/types/hand.ts
++++ b/apps/web/src/types/hand.ts
+@@ -4,4 +4,5 @@ export type Hand = {
+   id: string
+   playerId: string
+   cards: TableCard[]
++  revealedCardIds: string[]
+ }
+\ No newline at end of file
+diff --git a/apps/web/src/types/pile.ts b/apps/web/src/types/pile.ts
+index c8828f5..43aa457 100644
+--- a/apps/web/src/types/pile.ts
++++ b/apps/web/src/types/pile.ts
+@@ -4,4 +4,5 @@ import type { TableObjectState } from './table'
+ export type Pile = TableObjectState & {
+   id: string
+   cards: TableCard[]
++  rotation: number
+ }
+\ No newline at end of file

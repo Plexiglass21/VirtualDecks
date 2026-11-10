@@ -1,0 +1,1096 @@
+diff --git a/README_BLOCCO3.md b/README_BLOCCO3.md
+new file mode 100644
+index 0000000..5c87b80
+--- /dev/null
++++ b/README_BLOCCO3.md
+@@ -0,0 +1,57 @@
++# VirtualDecks — Blocco 3: sessioni, riconnessioni e stabilità
++
++Questa patch va applicata **alla versione del Blocco 2 con le tre modifiche manuali già presenti** (rotazione in drag, colori delle carte rivelate, destinatari selettivi).
++
++## Cosa cambia
++
++- **Riconnessione automatica**: dopo un refresh o una perdita temporanea della connessione, il client presenta `room:resume` con `{ roomId, playerId, token }`. Il token casuale di 256 bit è conservato in `sessionStorage` della singola scheda; non viene mai incluso in `room:players` o in `table:state`.
++- **Stanze conservate**: disconnettersi lascia inalterate identità e mano. Gli altri giocatori vedono `online: false`. Le condivisioni della mano vengono nascoste alla disconnessione del proprietario; un destinatario disconnesso perde l'autorizzazione a vedere nuove rivelazioni.
++- **Uscita volontaria**: cliccando il logo viene richiesta conferma. `room:leave` revoca il token, restituisce le carte della mano al mazzo mescolandole e libera il posto. Se esce il creatore, il ruolo di host passa al giocatore rimasto da più tempo.
++- **Permessi**: soltanto l'host può eseguire `reset` (controllo sia sul server sia nella UI). Shuffle e altre azioni libere restano disponibili a tutti.
++- **Pulizia**: una stanza con zero giocatori online scade dopo 60 minuti (controllo periodico ogni minuto). Tutti i giocatori offline rimangono nel conteggio del limite di otto posti finché non escono o scade la stanza.
++- **Idempotenza**: ogni comando `table:action` contiene un `actionId` UUID. Il server conserva gli ultimi 128 risultati per giocatore, così un reinvio dello stesso comando non esegue due volte la stessa operazione.
++- **Interfaccia**: stato di connessione, tentativo manuale di riconnessione, elenco host/online/offline; la distribuzione e la condivisione delle mani non possono più selezionare destinatari offline.
++
++## File principali
++
++- `apps/server/src/index.ts`: sessioni, token, resume, leave, host, TTL, dedup.
++- `apps/server/src/game.ts`: `removePlayer()` restituisce le carte al mazzo.
++- `apps/web/src/App.tsx`: memorizza le credenziali nella scheda e ripristina la sessione.
++- `apps/web/src/types/player.ts`, `apps/web/src/hooks/useTableGame.ts` e componenti del tavolo: online/offline, permessi, retry e actionId.
++- `apps/server/test/session.test.mjs`: test di ripristino, token errato, cambio host, richieste duplicate e scadenza.
++
++## Esecuzione
++
++```bash
++npm install
++npm run build:server
++npm run typecheck:web
++npm run test:server
++npm run build:web
++```
++
++Poi avvia due terminali con `npm run dev:server` e `npm run dev:web`.
++
++### Test manuale più utile
++
++1. A crea una stanza, B entra. A pesca tre carte nella propria mano.
++2. Ricarica la pagina di A: deve riapparire **la stessa identità**, con **le stesse tre carte** e lo stesso codice stanza.
++3. Chiudi la connessione di A dai DevTools o disattiva brevemente la rete: B vede A offline, ma il tavolo rimane operativo. Riattiva la connessione: A rientra.
++4. B prova a fare reset: il server lo rifiuta. A, che è host, riesce.
++5. A clicca il logo ed esce confermando: la sua mano torna al mazzo, B diventa host.
++6. B esce: la stanza viene eliminata immediatamente perché non restano partecipanti.
++7. Prova a condividere carte a un giocatore offline: la checkbox deve essere disattivata.
++
++## Limiti consapevoli della V1
++
++- Le partite restano **solo nella RAM del server**. Se il processo viene riavviato, nessuna stanza può essere ripristinata.
++- `sessionStorage` ripristina la stessa scheda dopo refresh. Una nuova scheda non condivide automaticamente l'identità (utile per non rubare la sessione ai test con più giocatori). Chiudere definitivamente una scheda può perdere il token.
++- Non sono ancora previsti account, persistency DB, multiistanza o salvataggi su disco.
++- Se la rete manca, l'uscita volontaria non può essere confermata dal server: riconnettersi prima di lasciare.
++- Il creatore offline mantiene il ruolo di host fino al rientro o all'uscita esplicita; non è previsto un trasferimento automatico dopo alcuni minuti.
++- I valori già mostrati ad altri non possono essere "dimenticati" da un client. La disconnessione revoca la condivisione per il futuro.
++- In produzione servono HTTPS/WSS, accesso al server protetto e CORS_ORIGINS configurato; il token è una credenziale sensibile.
++
++## Verifica effettuata nel workspace di preparazione
++
++I test unitari del motore `apps/server/test/game.test.mjs` sono passati. È stato inoltre eseguito un controllo sintattico TS/TSX e un controllo dei tipi del backend con definizioni Socket.IO surrogate, dato che l'installazione di pacchetti npm nel workspace di preparazione non ha potuto completarsi. I test end-to-end Socket.IO e la build frontend devono essere completati nel tuo ambiente con `npm install`.
+diff --git a/apps/server/src/game.ts b/apps/server/src/game.ts
+index 12ad190..97a1510 100644
+--- a/apps/server/src/game.ts
++++ b/apps/server/src/game.ts
+@@ -92,6 +92,18 @@ export function addPlayer(game: Game, playerId: string) {
+   game.version++
+ }
+ 
++/** Explicit exit: invalidate the hand and put its cards back into the shuffled deck. */
++export function removePlayer(game: Game, playerId: string) {
++  const hand = game.hands.find((candidate) => candidate.playerId === playerId)
++  if (!hand) return
++  game.deck = shuffle([...game.deck, ...hand.cards.map(({ id, rank, suit }) => ({ id, rank, suit }))])
++  game.hands = game.hands.filter((candidate) => candidate.playerId !== playerId)
++  for (const remaining of game.hands) {
++    remaining.revealedToPlayerIds = remaining.revealedToPlayerIds.filter((id) => id !== playerId)
++  }
++  game.version++
++}
++
+ function visibleCard(card: TableCard, reveal: boolean): VisibleCard {
+   return reveal ? { id: card.id, faceUp: card.faceUp, rank: card.rank, suit: card.suit }
+     : { id: card.id, faceUp: card.faceUp }
+diff --git a/apps/server/src/index.ts b/apps/server/src/index.ts
+index b277156..bc6ab44 100644
+--- a/apps/server/src/index.ts
++++ b/apps/server/src/index.ts
+@@ -1,36 +1,60 @@
+ import { createServer } from 'node:http'
+-import { randomInt, randomUUID } from 'node:crypto'
++import { randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
+ import { Server } from 'socket.io'
+-import { addPlayer, applyAction, newGame, viewFor, type DeckKind, type Game } from './game.js'
++import { addPlayer, applyAction, newGame, removePlayer, viewFor, type DeckKind, type Game } from './game.js'
+ 
+-type Player = { id: string; name: string }
+-type Room = { id: string; players: Player[]; game: Game }
++type PublicPlayer = { id: string; name: string; online: boolean; isHost: boolean }
++type RoomPlayer = { id: string; name: string; token: string; socketId?: string }
++type Room = {
++  id: string
++  players: RoomPlayer[]
++  hostPlayerId: string
++  nextPlayerNumber: number
++  game: Game
++  emptySince: number | null
++  completedActions: Map<string, Map<string, ReturnType<typeof applyAction>>>
++}
+ type RoomResponse =
+-  | { ok: true; roomId: string; playerId: string; players: Player[]; table: ReturnType<typeof viewFor> }
++  | { ok: true; roomId: string; playerId: string; resumeToken: string; players: PublicPlayer[]; table: ReturnType<typeof viewFor> }
+   | { ok: false; error: string }
+ type ActionResponse = ReturnType<typeof applyAction>
++type LeaveResponse = { ok: true } | { ok: false; error: string }
+ type SocketData = { roomId?: string; playerId?: string }
+ 
+ interface ClientToServerEvents {
+   'room:create': (deckKind: DeckKind, ack: (response: RoomResponse) => void) => void
+   'room:join': (roomCode: string, ack: (response: RoomResponse) => void) => void
++  'room:resume': (credentials: unknown, ack: (response: RoomResponse) => void) => void
++  'room:leave': (ack: (response: LeaveResponse) => void) => void
+   'table:action': (action: unknown, ack: (response: ActionResponse) => void) => void
+ }
+ interface ServerToClientEvents {
+-  'room:players': (players: Player[]) => void
++  'room:players': (players: PublicPlayer[]) => void
+   'table:state': (table: ReturnType<typeof viewFor>) => void
+ }
+ 
+ const PORT = Number(process.env.PORT || 3001)
+ const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173').split(',').map((origin) => origin.trim())
+ const MAX_PLAYERS = 8
++// Defaults are one hour and one minute; values may be lowered in integration tests.
++const ROOM_EMPTY_TTL_MS = Math.max(500, Number(process.env.ROOM_EMPTY_TTL_MS || 60 * 60 * 1000))
++const CLEANUP_INTERVAL_MS = Math.max(100, Number(process.env.ROOM_CLEANUP_INTERVAL_MS || 60 * 1000))
++const ACTION_CACHE_LIMIT = 128
+ const roomCodes = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+ const rooms = new Map<string, Room>()
+ const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>(createServer(), {
+   cors: { origin: allowedOrigins },
+ })
+ 
+-function roomCode() {
++const resumeToken = () => randomBytes(32).toString('hex')
++const publicPlayers = (room: Room): PublicPlayer[] => room.players.map((player) => ({
++  id: player.id,
++  name: player.name,
++  online: Boolean(player.socketId),
++  isHost: player.id === room.hostPlayerId,
++}))
++
++function roomCode(): string {
+   let code: string
+   do {
+     code = Array.from({ length: 4 }, () => roomCodes[randomInt(roomCodes.length)]).join('')
+@@ -38,60 +62,162 @@ function roomCode() {
+   return code
+ }
+ 
++function tokenMatches(expected: string, provided: unknown): boolean {
++  if (typeof provided !== 'string' || !/^[a-f0-9]{64}$/.test(provided)) return false
++  return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(provided, 'hex'))
++}
++
+ function publish(room: Room) {
+-  // Never io.to(room.id).emit('table:state', room.game): its deck and hands are confidential!
++  // The full Game contains private cards. Only send the per-player sanitized GameView.
+   for (const player of room.players) {
+-    io.to(`${room.id}:${player.id}`).emit('table:state', viewFor(room.game, player.id))
++    if (player.socketId) {
++      io.to(`${room.id}:${player.id}`).emit('table:state', viewFor(room.game, player.id))
++    }
++  }
++}
++
++function broadcast(room: Room) {
++  io.to(room.id).emit('room:players', publicPlayers(room))
++  publish(room)
++}
++
++function roomResponse(room: Room, player: RoomPlayer): RoomResponse {
++  return {
++    ok: true, roomId: room.id, playerId: player.id, resumeToken: player.token,
++    players: publicPlayers(room), table: viewFor(room.game, player.id),
++  }
++}
++
++function connectedIds(room: Room): ReadonlySet<string> {
++  return new Set(room.players.filter((player) => player.socketId).map((player) => player.id))
++}
++
++// An explicit leave is different from an interrupted connection: it revokes the token
++// and returns the player's cards to the deck before removing their seat.
++function depart(room: Room, playerId: string) {
++  const player = room.players.find((candidate) => candidate.id === playerId)
++  if (!player) return
++  if (player.socketId) {
++    const leavingSocket = io.sockets.sockets.get(player.socketId)
++    leavingSocket?.leave(room.id)
++    leavingSocket?.leave(`${room.id}:${player.id}`)
++    if (leavingSocket) {
++      leavingSocket.data.roomId = undefined
++      leavingSocket.data.playerId = undefined
++    }
++  }
++  removePlayer(room.game, playerId)
++  room.players = room.players.filter((candidate) => candidate.id !== playerId)
++  room.completedActions.delete(playerId)
++  if (room.hostPlayerId === playerId && room.players.length) room.hostPlayerId = room.players[0].id
++  if (!room.players.length) {
++    rooms.delete(room.id)
++    return
+   }
++  room.emptySince = room.players.some((candidate) => candidate.socketId) ? null : Date.now()
++  broadcast(room)
+ }
+ 
+ io.on('connection', (socket) => {
++  function occupy(room: Room, player: RoomPlayer) {
++    // Only one socket at a time may act as a player; an old socket loses authority.
++    if (player.socketId && player.socketId !== socket.id) {
++      const previous = io.sockets.sockets.get(player.socketId)
++      if (previous) {
++        previous.data.roomId = undefined
++        previous.data.playerId = undefined
++        previous.disconnect(true)
++      }
++    }
++    player.socketId = socket.id
++    room.emptySince = null
++    socket.data.roomId = room.id
++    socket.data.playerId = player.id
++    socket.join(room.id)
++    socket.join(`${room.id}:${player.id}`)
++  }
++
+   socket.on('room:create', (deckKind, ack) => {
+     if (typeof ack !== 'function') return
+     if (socket.data.roomId) return ack({ ok: false, error: 'You are already in a room.' })
+     if (deckKind !== 'french' && deckKind !== 'italian') return ack({ ok: false, error: 'Unknown deck type.' })
+-
+     const id = roomCode()
+-    const player: Player = { id: randomUUID(), name: 'Player 1' }
+-    const room: Room = { id, players: [player], game: newGame(player.id, deckKind) }
++    const player: RoomPlayer = { id: randomUUID(), name: 'Player 1', token: resumeToken() }
++    const room: Room = {
++      id, players: [player], hostPlayerId: player.id, nextPlayerNumber: 2,
++      game: newGame(player.id, deckKind), emptySince: null, completedActions: new Map(),
++    }
+     rooms.set(id, room)
+-    socket.data.roomId = id
+-    socket.data.playerId = player.id
+-    socket.join(id)
+-    socket.join(`${id}:${player.id}`)
+-    ack({ ok: true, roomId: id, playerId: player.id, players: room.players, table: viewFor(room.game, player.id) })
+-    io.to(id).emit('room:players', room.players)
++    occupy(room, player)
++    ack(roomResponse(room, player))
++    broadcast(room)
+   })
+ 
+   socket.on('room:join', (rawCode, ack) => {
+     if (typeof ack !== 'function') return
+     if (socket.data.roomId) return ack({ ok: false, error: 'You are already in a room.' })
+-    if (typeof rawCode !== 'string' || !/^[A-Z2-9]{4}$/i.test(rawCode)) return ack({ ok: false, error: 'Invalid room code.' })
+-    const id = rawCode.trim().toUpperCase()
+-    const room = rooms.get(id)
+-    if (!room) return ack({ ok: false, error: 'Room not found.' })
++    if (typeof rawCode !== 'string' || !/^[A-Z2-9]{4}$/i.test(rawCode.trim())) return ack({ ok: false, error: 'Invalid room code.' })
++    const room = rooms.get(rawCode.trim().toUpperCase())
++    if (!room) return ack({ ok: false, error: 'Room not found or expired.' })
+     if (room.players.length >= MAX_PLAYERS) return ack({ ok: false, error: 'Room is full.' })
+-
+-    const player: Player = { id: randomUUID(), name: `Player ${room.players.length + 1}` }
++    const player: RoomPlayer = { id: randomUUID(), name: `Player ${room.nextPlayerNumber++}`, token: resumeToken() }
+     room.players.push(player)
+     addPlayer(room.game, player.id)
+-    socket.data.roomId = id
+-    socket.data.playerId = player.id
+-    socket.join(id)
+-    socket.join(`${id}:${player.id}`)
+-    ack({ ok: true, roomId: id, playerId: player.id, players: room.players, table: viewFor(room.game, player.id) })
+-    io.to(id).emit('room:players', room.players)
+-    publish(room)
++    occupy(room, player)
++    ack(roomResponse(room, player))
++    broadcast(room)
++  })
++
++  socket.on('room:resume', (credentials, ack) => {
++    if (typeof ack !== 'function') return
++    if (socket.data.roomId) return ack({ ok: false, error: 'You are already in a room.' })
++    if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) return ack({ ok: false, error: 'Invalid session.' })
++    const { roomId, playerId, token } = credentials as Record<string, unknown>
++    if (typeof roomId !== 'string' || typeof playerId !== 'string') return ack({ ok: false, error: 'Invalid session.' })
++    const room = rooms.get(roomId)
++    const player = room?.players.find((candidate) => candidate.id === playerId)
++    if (!room || !player || !tokenMatches(player.token, token)) return ack({ ok: false, error: 'Session not found or expired.' })
++    occupy(room, player)
++    ack(roomResponse(room, player))
++    broadcast(room)
++  })
++
++  socket.on('room:leave', (ack) => {
++    if (typeof ack !== 'function') return
++    const { roomId, playerId } = socket.data
++    const room = roomId ? rooms.get(roomId) : undefined
++    if (!room || !playerId || !room.players.some((player) => player.id === playerId && player.socketId === socket.id)) {
++      return ack({ ok: false, error: 'You are not in an active room.' })
++    }
++    depart(room, playerId)
++    ack({ ok: true })
+   })
+ 
+   socket.on('table:action', (action, ack) => {
+     if (typeof ack !== 'function') return
+     const { roomId, playerId } = socket.data
+     const room = roomId ? rooms.get(roomId) : undefined
+-    if (!room || !playerId || !room.players.some((player) => player.id === playerId)) {
++    const player = room?.players.find((candidate) => candidate.id === playerId)
++    if (!room || !player || player.socketId !== socket.id) {
+       return ack({ ok: false, error: 'You are not in an active room.' })
+     }
+-    const result = applyAction(room.game, playerId, action, new Set(room.players.map((player) => player.id)))
++    if (!action || typeof action !== 'object' || Array.isArray(action)) return ack({ ok: false, error: 'Invalid action.' })
++    const { type, actionId } = action as Record<string, unknown>
++    if (typeof actionId !== 'string' || !/^[0-9a-f-]{36}$/.test(actionId)) {
++      return ack({ ok: false, error: 'Invalid action ID.' })
++    }
++    let cache = room.completedActions.get(player.id)
++    if (!cache) {
++      cache = new Map()
++      room.completedActions.set(player.id, cache)
++    }
++    if (cache.has(actionId)) return ack(cache.get(actionId)!)
++    if (type === 'reset' && room.hostPlayerId !== player.id) {
++      return ack({ ok: false, error: 'Only the room host can reset the table.' })
++    }
++    const result = applyAction(room.game, player.id, action, connectedIds(room))
++    cache.set(actionId, result)
++    if (cache.size > ACTION_CACHE_LIMIT) cache.delete(cache.keys().next().value!)
+     ack(result)
+     if (result.ok) publish(room)
+   })
+@@ -99,20 +225,28 @@ io.on('connection', (socket) => {
+   socket.on('disconnect', () => {
+     const { roomId, playerId } = socket.data
+     const room = roomId ? rooms.get(roomId) : undefined
+-    if (!room || !playerId) return
+-    // A departing player must not leave an orphaned public reveal on the table.
+-    applyAction(room.game, playerId, { type: 'hide-hand' })
+-    room.players = room.players.filter((player) => player.id !== playerId)
++    const player = room?.players.find((candidate) => candidate.id === playerId)
++    if (!room || !player || player.socketId !== socket.id) return
++    player.socketId = undefined
++    // A temporary disconnect retains the seat and the private hand. Stop showing
++    // previously revealed cards until the owner chooses to share them again.
++    applyAction(room.game, player.id, { type: 'hide-hand' })
+     for (const hand of room.game.hands) {
+-      hand.revealedToPlayerIds = hand.revealedToPlayerIds.filter((id) => id !== playerId)
+-    }
+-    if (!room.players.length) {
+-      rooms.delete(room.id)
+-    } else {
+-      io.to(room.id).emit('room:players', room.players)
+-      publish(room)
++      hand.revealedToPlayerIds = hand.revealedToPlayerIds.filter((id) => id !== player.id)
+     }
++    if (!room.players.some((candidate) => candidate.socketId)) room.emptySince = Date.now()
++    broadcast(room)
+   })
+ })
+ 
++// No persistent database in V1. An empty room can be resumed for one hour;
++// after expiry both room code and all resume tokens cease to work.
++const cleanupTimer = setInterval(() => {
++  const now = Date.now()
++  for (const room of rooms.values()) {
++    if (room.emptySince !== null && now - room.emptySince >= ROOM_EMPTY_TTL_MS) rooms.delete(room.id)
++  }
++}, CLEANUP_INTERVAL_MS)
++cleanupTimer.unref()
++
+ io.httpServer.listen(PORT, () => console.log(`VirtualDecks server listening on http://localhost:${PORT}`))
+diff --git a/apps/server/test/game.test.mjs b/apps/server/test/game.test.mjs
+index 852bd62..66c4b90 100644
+--- a/apps/server/test/game.test.mjs
++++ b/apps/server/test/game.test.mjs
+@@ -1,6 +1,6 @@
+ import { test } from 'node:test'
+ import assert from 'node:assert/strict'
+-import { newGame, addPlayer, applyAction, viewFor } from '../dist/game.js'
++import { newGame, addPlayer, removePlayer, applyAction, viewFor } from '../dist/game.js'
+ 
+ const validPosition = { x: 0.5, y: 0.5 }
+ const countCards = (game) => game.deck.length + game.looseCards.length + game.hands.reduce((n, hand) => n + hand.cards.length, 0) + game.piles.reduce((n, pile) => n + pile.cards.length, 0) + game.zones.reduce((n, zone) => n + zone.cards.length, 0)
+@@ -194,3 +194,20 @@ test('Hand is revealed only to selected recipients', () => {
+   assert.equal(carlView.hands[0].cards.filter(c => c.rank).length, 0)
+   assert.equal(JSON.stringify(carlView).includes(cardId), false)
+ })
++
++
++test('Leaving permanently returns private cards to the deck and clears recipient grants', () => {
++  const game = newGame('alice')
++  addPlayer(game, 'bob')
++  applyAction(game, 'alice', { type: 'deal', recipients: ['alice', 'bob'], cardsPerPlayer: 3 })
++  const bobId = game.hands.find(h => h.playerId === 'bob').cards[0].id
++  applyAction(game, 'bob', { type: 'reveal-hand', scope: 'all', recipientIds: ['alice'] })
++  applyAction(game, 'alice', { type: 'reveal-hand', scope: 'all', recipientIds: ['bob'] })
++  const before = game.version
++  removePlayer(game, 'bob')
++  assert.equal(game.version, before + 1)
++  assert.equal(game.hands.length, 1)
++  assert.equal(game.hands[0].revealedToPlayerIds.includes('bob'), false)
++  assert.equal(game.deck.some(c => c.id === bobId), true)
++  assert.equal(countCards(game), 52)
++})
+diff --git a/apps/server/test/session.test.mjs b/apps/server/test/session.test.mjs
+new file mode 100644
+index 0000000..c928f47
+--- /dev/null
++++ b/apps/server/test/session.test.mjs
+@@ -0,0 +1,111 @@
++import { test } from 'node:test'
++import assert from 'node:assert/strict'
++import { spawn } from 'node:child_process'
++import { randomInt, randomUUID } from 'node:crypto'
++import { io } from 'socket.io-client'
++
++const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
++const ack = (client, event, ...args) => client.timeout(2500).emitWithAck(event, ...args)
++const action = (client, data) => ack(client, 'table:action', { ...data, actionId: randomUUID() })
++const connect = (url) => new Promise((resolve, reject) => {
++  const socket = io(url, { forceNew: true, reconnection: false, timeout: 1200 })
++  socket.once('connect', () => resolve(socket))
++  socket.once('connect_error', reject)
++})
++
++async function startServer(t, env = {}) {
++  const port = randomInt(39000, 49000)
++  const url = `http://127.0.0.1:${port}`
++  const child = spawn(process.execPath, ['apps/server/dist/index.js'], {
++    cwd: process.cwd(), env: { ...process.env, PORT: String(port), ...env }, stdio: 'pipe',
++  })
++  t.after(() => child.kill())
++  let socket
++  let lastError
++  for (let i = 0; i < 35; i++) {
++    try { socket = await connect(url); break }
++    catch (error) { lastError = error; await pause(75) }
++  }
++  if (!socket) throw lastError
++  t.after(() => socket.disconnect())
++  return { url, socket }
++}
++
++function player(view, id) { return view.players.find((p) => p.id === id) }
++
++test('Disconnect preserves identity and hand; correct token resumes while fake token fails', async (t) => {
++  const { url, socket: alice } = await startServer(t)
++  const bob = await connect(url)
++  t.after(() => bob.disconnect())
++  const create = await ack(alice, 'room:create', 'french')
++  const join = await ack(bob, 'room:join', create.roomId)
++  assert.equal(create.ok, true)
++  assert.equal(join.ok, true)
++  assert.equal(player(join, create.playerId).isHost, true)
++  assert.equal(player(join, join.playerId).online, true)
++  assert.equal((await action(alice, { type: 'draw-hand' })).ok, true)
++  const savedId = (await ack(alice, 'room:resume', { roomId: create.roomId })).ok
++  assert.equal(savedId, false) // Cannot resume an already-bound socket.
++  const before = await action(alice, { type: 'draw-hand' })
++  assert.equal(before.ok, true)
++  const status = new Promise((resolve) => {
++    const listener = (players) => {
++      if (players.some((p) => p.id === create.playerId && !p.online)) { bob.off('room:players', listener); resolve(players) }
++    }
++    bob.on('room:players', listener)
++  })
++  alice.disconnect()
++  await status
++  const invalid = await connect(url)
++  t.after(() => invalid.disconnect())
++  assert.equal((await ack(invalid, 'room:resume', { roomId: create.roomId, playerId: create.playerId, token: '0'.repeat(64) })).ok, false)
++  const resume = await connect(url)
++  t.after(() => resume.disconnect())
++  const recovery = await ack(resume, 'room:resume', { roomId: create.roomId, playerId: create.playerId, token: create.resumeToken })
++  assert.equal(recovery.ok, true)
++  assert.equal(recovery.playerId, create.playerId)
++  assert.equal(player(recovery, create.playerId).online, true)
++  assert.equal(recovery.table.hands.find(h => h.playerId === create.playerId).cards.length, 2)
++  assert.equal((await action(bob, { type: 'reset' })).ok, false)
++  assert.equal((await action(resume, { type: 'reset' })).ok, true)
++})
++
++test('Idempotent actions, host transfer and revoked token on voluntary exit', async (t) => {
++  const { url, socket: alice } = await startServer(t)
++  const bob = await connect(url)
++  t.after(() => bob.disconnect())
++  const create = await ack(alice, 'room:create', 'italian')
++  const join = await ack(bob, 'room:join', create.roomId)
++  assert.equal(join.ok, true)
++  const move = { type: 'draw-hand', actionId: randomUUID() }
++  const first = await ack(alice, 'table:action', move)
++  const repeated = await ack(alice, 'table:action', move)
++  assert.deepEqual(repeated, first)
++  assert.equal(first.ok, true)
++  const result = await ack(alice, 'room:leave')
++  assert.equal(result.ok, true)
++  const fake = await connect(url)
++  t.after(() => fake.disconnect())
++  assert.equal((await ack(fake, 'room:resume', { roomId: create.roomId, playerId: create.playerId, token: create.resumeToken })).ok, false)
++  // Former host's one drawn card goes back into the deck.
++  const bobRecovered = await ack(bob, 'table:action', { type: 'reset', actionId: randomUUID() })
++  assert.equal(bobRecovered.ok, true)
++  const c = await ack(fake, 'room:join', create.roomId)
++  assert.equal(c.ok, true)
++  assert.equal(player(c, join.playerId).isHost, true)
++  assert.equal((await ack(bob, 'room:leave')).ok, true)
++  assert.equal((await ack(fake, 'room:leave')).ok, true)
++  assert.equal((await ack(fake, 'room:join', create.roomId)).ok, false)
++})
++
++test('An entirely offline room expires and can no longer be resumed', async (t) => {
++  const { url, socket } = await startServer(t, { ROOM_EMPTY_TTL_MS: '500', ROOM_CLEANUP_INTERVAL_MS: '100' })
++  const created = await ack(socket, 'room:create', 'french')
++  socket.disconnect()
++  await pause(850)
++  const reconnect = await connect(url)
++  t.after(() => reconnect.disconnect())
++  const response = await ack(reconnect, 'room:resume', { roomId: created.roomId, playerId: created.playerId, token: created.resumeToken })
++  assert.equal(response.ok, false)
++  assert.equal((await ack(reconnect, 'room:join', created.roomId)).ok, false)
++})
+diff --git a/apps/server/test/socket.test.mjs b/apps/server/test/socket.test.mjs
+index 2068412..de278d9 100644
+--- a/apps/server/test/socket.test.mjs
++++ b/apps/server/test/socket.test.mjs
+@@ -1,7 +1,7 @@
+ import { test } from 'node:test'
+ import assert from 'node:assert/strict'
+ import { spawn } from 'node:child_process'
+-import { randomInt } from 'node:crypto'
++import { randomInt, randomUUID } from 'node:crypto'
+ import { io } from 'socket.io-client'
+ 
+ const pause = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+@@ -10,7 +10,7 @@ const connect = (url) => new Promise((resolve, reject) => {
+   client.once('connect', () => resolve(client))
+   client.once('connect_error', reject)
+ })
+-const ack = (client, event, ...args) => client.timeout(1500).emitWithAck(event, ...args)
++const ack = (client, event, ...args) => client.timeout(1500).emitWithAck(event, ...(event === 'table:action' ? [{ ...args[0], actionId: randomUUID() }] : args))
+ const nextState = (client) => new Promise((resolve) => client.once('table:state', resolve))
+ const stateAtLeast = (client, version) => new Promise((resolve, reject) => {
+   const timer = setTimeout(() => { client.off('table:state', onState); reject(new Error(`Timed out waiting for state version ${version}`)) }, 1500)
+@@ -43,11 +43,12 @@ test('Two real Socket.IO clients: room and draw synchronized, hands kept private
+   assert.equal(room.ok, true)
+   assert.equal(room.table.deckCount, 52)
+   assert.equal(room.table.deck, undefined)
+-  assert.equal((await ack(b, 'room:join', room.roomId)).ok, true)
++  const joined = await ack(b, 'room:join', room.roomId)
++  assert.equal(joined.ok, true)
+   assert.equal((await ack(outsider, 'table:action', { type: 'draw-hand' })).ok, false)
+ 
+-  const aNext = nextState(a)
+-  const bNext = nextState(b)
++  const aNext = stateAtLeast(a, joined.table.version + 1)
++  const bNext = stateAtLeast(b, joined.table.version + 1)
+   assert.equal((await ack(a, 'table:action', { type: 'draw-hand' })).ok, true)
+   const [aView, bView] = await Promise.all([aNext, bNext])
+   assert.equal(aView.deckCount, 51)
+diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
+index a78b6a6..bf2273d 100644
+--- a/apps/web/src/App.tsx
++++ b/apps/web/src/App.tsx
+@@ -1,4 +1,4 @@
+-import { useEffect, useMemo, useState } from 'react'
++import { useEffect, useMemo, useRef, useState } from 'react'
+ import { HomeScreen } from './components/home/HomeScreen'
+ import { TableSurface } from './components/table/TableSurface'
+ import { socket } from './multiplayer/socket'
+@@ -6,153 +6,217 @@ import type { Player } from './types/player'
+ import type { TableGameState } from './types/game'
+ 
+ type AppScreen = 'home' | 'table'
+-
+ type RoomSession = {
+   roomId: string
+   currentPlayerId: string
+   players: Player[]
+   table: TableGameState
+ }
+-
++type ResumeCredentials = { roomId: string; playerId: string; token: string }
+ type RoomResponse =
+-  | {
+-    ok: true
+-    roomId: string
+-    playerId: string
+-    players: Player[]
+-    table: TableGameState
+-  }
+-  | {
+-    ok: false
+-    error: string
++  | { ok: true; roomId: string; playerId: string; resumeToken: string; players: Player[]; table: TableGameState }
++  | { ok: false; error: string }
++type LeaveResponse = { ok: true } | { ok: false; error: string }
++type ConnectionStatus = 'connected' | 'reconnecting' | 'resuming'
++
++const SESSION_KEY = 'virtualdecks:room-session:v1'
++
++function getSavedSession(): ResumeCredentials | null {
++  try {
++    const value = sessionStorage.getItem(SESSION_KEY)
++    if (!value) return null
++    const candidate: unknown = JSON.parse(value)
++    if (!candidate || typeof candidate !== 'object') return null
++    const { roomId, playerId, token } = candidate as Record<string, unknown>
++    if (typeof roomId !== 'string' || !/^[A-Z2-9]{4}$/.test(roomId) ||
++      typeof playerId !== 'string' || !/^[\w-]{20,50}$/.test(playerId) ||
++      typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) return null
++    return { roomId, playerId, token }
++  } catch {
++    return null
+   }
++}
+ 
+-function getScreenFromHash(): AppScreen {
+-  return window.location.hash === '#table'
+-    ? 'table'
+-    : 'home'
++function saveSession(session: ResumeCredentials | null) {
++  try {
++    if (session) sessionStorage.setItem(SESSION_KEY, JSON.stringify(session))
++    else sessionStorage.removeItem(SESSION_KEY)
++  } catch {
++    // Storage can be disabled. Multiplayer still works until this tab reloads.
++  }
+ }
+ 
+ function App() {
+-  const initialScreen = useMemo(() => getScreenFromHash(), [])
+-
++  const initialScreen = useMemo<AppScreen>(() => window.location.hash === '#table' ? 'table' : 'home', [])
+   const [screen, setScreen] = useState<AppScreen>(initialScreen)
+-
+-  const [roomSession, setRoomSession] =
+-    useState<RoomSession | null>(null)
+-
+-  const [isConnecting, setIsConnecting] = useState(false)
+-
+-  const [roomError, setRoomError] =
+-    useState<string | null>(null)
++  const [roomSession, setRoomSession] = useState<RoomSession | null>(null)
++  const [isConnecting, setIsConnecting] = useState(Boolean(getSavedSession()))
++  const [roomError, setRoomError] = useState<string | null>(null)
++  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('reconnecting')
++  const [connectionIssue, setConnectionIssue] = useState<string | null>(null)
++  // StrictMode may set up the connection effect twice. Resume only once per socket.
++  const resumeInFlight = useRef<string | null>(null)
++  const boundSocketId = useRef<string | null>(null)
++
++  function enterRoom(response: Extract<RoomResponse, { ok: true }>) {
++    boundSocketId.current = socket.id ?? null
++    saveSession({ roomId: response.roomId, playerId: response.playerId, token: response.resumeToken })
++    setRoomSession({
++      roomId: response.roomId,
++      currentPlayerId: response.playerId,
++      players: response.players,
++      table: response.table,
++    })
++    setIsConnecting(false)
++    setRoomError(null)
++    setConnectionIssue(null)
++    setConnectionStatus('connected')
++    window.location.hash = 'table'
++    setScreen('table')
++  }
+ 
+   useEffect(() => {
+-    const handleHashChange = () => {
+-      setScreen(getScreenFromHash())
+-    }
+-
+-    window.addEventListener('hashchange', handleHashChange)
+-
+-    return () => {
+-      window.removeEventListener(
+-        'hashchange',
+-        handleHashChange,
+-      )
++    function handlePlayers(players: Player[]) {
++      setRoomSession((current) => current ? { ...current, players } : null)
+     }
+-  }, [])
+ 
+-  useEffect(() => {
+-    function handlePlayers(players: Player[]) {
+-      setRoomSession((current) => {
+-        if (!current) {
+-          return current
++    function handleConnect() {
++      const saved = getSavedSession()
++      const connectionId = socket.id
++      if (!saved || !connectionId || boundSocketId.current === connectionId || resumeInFlight.current === connectionId) return
++      resumeInFlight.current = connectionId
++      setIsConnecting(true)
++      setConnectionStatus('resuming')
++      setConnectionIssue(null)
++      socket.timeout(8000).emit('room:resume', saved, (error: Error | null, response?: RoomResponse) => {
++        if (resumeInFlight.current !== connectionId) return // Reply from a superseded connection.
++        resumeInFlight.current = null
++        if (error || !response) {
++          setConnectionStatus('reconnecting')
++          setConnectionIssue('Could not restore the session. Check your connection and reconnect.')
++          setIsConnecting(false)
++          return
+         }
+-
+-        return {
+-          ...current,
+-          players,
++        if (response.ok === false) {
++          saveSession(null)
++          setRoomSession(null)
++          setIsConnecting(false)
++          setConnectionIssue(null)
++          setRoomError(response.error)
++          window.location.hash = ''
++          setScreen('home')
++          return
+         }
++        enterRoom(response)
+       })
+     }
+ 
++    function handleDisconnect(reason: string) {
++      resumeInFlight.current = null
++      boundSocketId.current = null
++      if (!getSavedSession()) return
++      setConnectionStatus('reconnecting')
++      setConnectionIssue(reason === 'io server disconnect'
++        ? 'This session was opened in another tab. Refresh this tab to take it back.'
++        : null)
++    }
++
+     function handleConnectError(error: Error) {
+       setIsConnecting(false)
+-      setRoomError(error.message)
++      if (getSavedSession()) {
++        setConnectionStatus('reconnecting')
++        setConnectionIssue(`Connection interrupted: ${error.message}`)
++      } else {
++        setRoomError(error.message)
++      }
++    }
++
++    function handleHashChange() {
++      // Keep the table visible if its URL hash is temporarily changed.
++      setScreen(window.location.hash === '#table' ? 'table' : 'home')
+     }
+ 
+     socket.on('room:players', handlePlayers)
++    socket.on('connect', handleConnect)
++    socket.on('disconnect', handleDisconnect)
+     socket.on('connect_error', handleConnectError)
++    window.addEventListener('hashchange', handleHashChange)
++
++    if (getSavedSession()) {
++      if (socket.connected) handleConnect()
++      else socket.connect()
++    }
+ 
+     return () => {
+       socket.off('room:players', handlePlayers)
++      socket.off('connect', handleConnect)
++      socket.off('disconnect', handleDisconnect)
+       socket.off('connect_error', handleConnectError)
++      window.removeEventListener('hashchange', handleHashChange)
+     }
+   }, [])
+ 
+-  function enterRoom(response: RoomResponse) {
++  function handleRoomResponse(response: RoomResponse | undefined, error: Error | null) {
+     setIsConnecting(false)
+-
+-    if (!response.ok) {
++    if (error || !response) {
++      setRoomError('The server did not respond. Try again.')
++      return
++    }
++    if (response.ok === false) {
+       setRoomError(response.error)
+       return
+     }
+-
+-    setRoomSession({
+-      roomId: response.roomId,
+-      currentPlayerId: response.playerId,
+-      players: response.players,
+-      table: response.table,
+-    })
+-
+-    setRoomError(null)
+-
+-    window.location.hash = 'table'
+-    setScreen('table')
++    enterRoom(response)
+   }
+ 
+   function createRoom(deckKind: 'french' | 'italian') {
+     setRoomError(null)
+     setIsConnecting(true)
+-
+-    if (!socket.connected) {
+-      socket.connect()
+-    }
+-
+-    socket.emit(
+-      'room:create',
+-      deckKind,
+-      (response: RoomResponse) => {
+-        enterRoom(response)
+-      },
+-    )
++    if (!socket.connected) socket.connect()
++    socket.timeout(8000).emit('room:create', deckKind, (error: Error | null, response?: RoomResponse) => {
++      handleRoomResponse(response, error)
++    })
+   }
+ 
+   function joinRoom(roomId: string) {
+     setRoomError(null)
+     setIsConnecting(true)
++    if (!socket.connected) socket.connect()
++    socket.timeout(8000).emit('room:join', roomId, (error: Error | null, response?: RoomResponse) => {
++      handleRoomResponse(response, error)
++    })
++  }
+ 
++  function openHome() {
++    if (!window.confirm('Leave this room permanently? Your hand will be returned to the deck.')) return
+     if (!socket.connected) {
+-      socket.connect()
++      setConnectionIssue('Reconnect to the server before leaving the room.')
++      return
+     }
+-
+-    socket.emit(
+-      'room:join',
+-      roomId,
+-      (response: RoomResponse) => {
+-        enterRoom(response)
+-      },
+-    )
++    socket.timeout(8000).emit('room:leave', (error: Error | null, response?: LeaveResponse) => {
++      if (error || !response || response.ok === false) {
++        setConnectionIssue(response && response.ok === false ? response.error : 'Could not leave the room. Try again.')
++        return
++      }
++      saveSession(null)
++      resumeInFlight.current = null
++      boundSocketId.current = null
++      socket.disconnect()
++      setRoomSession(null)
++      setRoomError(null)
++      setConnectionIssue(null)
++      setIsConnecting(false)
++      window.location.hash = ''
++      setScreen('home')
++    })
+   }
+ 
+-  function openHome() {
++  function retryConnection() {
++    if (!getSavedSession()) return
++    setConnectionStatus('resuming')
++    setConnectionIssue(null)
+     socket.disconnect()
+-
+-    setRoomSession(null)
+-    setRoomError(null)
+-    setIsConnecting(false)
+-
+-    window.location.hash = ''
+-    setScreen('home')
++    socket.connect()
+   }
+ 
+   if (screen === 'table' && roomSession) {
+@@ -163,6 +227,9 @@ function App() {
+         roomId={roomSession.roomId}
+         players={roomSession.players}
+         initialTableState={roomSession.table}
++        connectionStatus={connectionStatus}
++        connectionIssue={connectionIssue}
++        onRetryConnection={retryConnection}
+       />
+     )
+   }
+@@ -177,4 +244,4 @@ function App() {
+   )
+ }
+ 
+-export default App
+\ No newline at end of file
++export default App
+diff --git a/apps/web/src/components/table/DealCardsDialog.tsx b/apps/web/src/components/table/DealCardsDialog.tsx
+index 1813aeb..671a6dc 100644
+--- a/apps/web/src/components/table/DealCardsDialog.tsx
++++ b/apps/web/src/components/table/DealCardsDialog.tsx
+@@ -7,7 +7,7 @@ export function DealCardsDialog({ players, deckCount, onDeal, onClose }: {
+   onDeal: (recipients: string[], cardsPerPlayer: number) => void
+   onClose: () => void
+ }) {
+-  const [recipients, setRecipients] = useState<string[]>(players.map((player) => player.id))
++  const [recipients, setRecipients] = useState<string[]>(players.filter((player) => player.online).map((player) => player.id))
+   const [countInput, setCountInput] = useState('1')
+   const count = Number(countInput)
+   const valid = recipients.length > 0 && Number.isInteger(count) && count > 0 && count <= 52 && recipients.length * count <= deckCount
+@@ -26,9 +26,9 @@ export function DealCardsDialog({ players, deckCount, onDeal, onClose }: {
+         <fieldset className="space-y-2">
+           <legend className="mb-2 text-sm text-ivory/90">Recipients</legend>
+           {players.map((player) => (
+-            <label key={player.id} className="flex cursor-pointer items-center gap-3 text-sm text-ivory/80">
+-              <input type="checkbox" checked={recipients.includes(player.id)} onChange={(event) => setRecipients((current) => event.target.checked ? [...current, player.id] : current.filter((id) => id !== player.id))} className="accent-amber-300" />
+-              {player.name}
++            <label key={player.id} className={`flex items-center gap-3 text-sm ${player.online ? 'cursor-pointer text-ivory/80' : 'cursor-not-allowed text-ivory/35'}`}>
++              <input type="checkbox" disabled={!player.online} checked={recipients.includes(player.id)} onChange={(event) => setRecipients((current) => event.target.checked ? [...current, player.id] : current.filter((id) => id !== player.id))} className="accent-amber-300" />
++              {player.name}{!player.online ? ' (offline)' : ''}
+             </label>
+           ))}
+         </fieldset>
+diff --git a/apps/web/src/components/table/RevealHandDialog.tsx b/apps/web/src/components/table/RevealHandDialog.tsx
+index fb51a7b..c06dc90 100644
+--- a/apps/web/src/components/table/RevealHandDialog.tsx
++++ b/apps/web/src/components/table/RevealHandDialog.tsx
+@@ -10,7 +10,7 @@ type Props = {
+ }
+ 
+ export function RevealHandDialog({ players, mode, selectedCount, onConfirm, onClose }: Props) {
+-  const [recipientIds, setRecipientIds] = useState<string[]>(players.map((player) => player.id))
++  const [recipientIds, setRecipientIds] = useState<string[]>(players.filter((player) => player.online).map((player) => player.id))
+   return (
+     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+       <div role="dialog" aria-modal="true" aria-label="Show hand" className="w-[min(26rem,95vw)] space-y-5 rounded-xl border border-white/10 bg-[#161816] p-6 text-ivory shadow-2xl">
+@@ -21,9 +21,9 @@ export function RevealHandDialog({ players, mode, selectedCount, onConfirm, onCl
+         <fieldset className="space-y-2">
+           <legend className="mb-2 text-sm text-ivory/90">Who can see these cards?</legend>
+           {players.map((player) => (
+-            <label key={player.id} className="flex cursor-pointer items-center gap-3 text-sm text-ivory/80">
+-              <input type="checkbox" checked={recipientIds.includes(player.id)} onChange={(event) => setRecipientIds((current) => event.target.checked ? [...current, player.id] : current.filter((id) => id !== player.id))} className="accent-amber-300" />
+-              {player.name}
++            <label key={player.id} className={`flex items-center gap-3 text-sm ${player.online ? 'cursor-pointer text-ivory/80' : 'cursor-not-allowed text-ivory/35'}`}>
++              <input type="checkbox" disabled={!player.online} checked={recipientIds.includes(player.id)} onChange={(event) => setRecipientIds((current) => event.target.checked ? [...current, player.id] : current.filter((id) => id !== player.id))} className="accent-amber-300" />
++              {player.name}{!player.online ? ' (offline)' : ''}
+             </label>
+           ))}
+         </fieldset>
+diff --git a/apps/web/src/components/table/TableSurface.tsx b/apps/web/src/components/table/TableSurface.tsx
+index 8ab0ba1..9a2db48 100644
+--- a/apps/web/src/components/table/TableSurface.tsx
++++ b/apps/web/src/components/table/TableSurface.tsx
+@@ -25,6 +25,9 @@ type TableSurfaceProps = {
+   roomId: string
+   players: Player[]
+   initialTableState: TableGameState
++  connectionStatus: 'connected' | 'reconnecting' | 'resuming'
++  connectionIssue: string | null
++  onRetryConnection: () => void
+ }
+ 
+ type TableAction = 'move-deck' | 'shuffle' | 'create-pile' | 'flip-selected' | 'rotate-selected' | 'show-hand-all' | 'show-hand-selected' | 'hide-hand' | 'deal' | 'reset'
+@@ -35,7 +38,7 @@ function clamp(value: number, min: number, max: number) {
+   return Math.min(max, Math.max(min, value))
+ }
+ 
+-export function TableSurface({ onBackHome, currentPlayerId, roomId, players, initialTableState }: TableSurfaceProps) {
++export function TableSurface({ onBackHome, currentPlayerId, roomId, players, initialTableState, connectionStatus, connectionIssue, onRetryConnection }: TableSurfaceProps) {
+   const tableRef = useRef<HTMLElement | null>(null)
+   const handRef = useRef<HTMLDivElement | null>(null)
+   const zoneRef = useRef<HTMLDivElement | null>(null)
+@@ -107,6 +110,8 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+     replaceGameState,
+   } = useTableGame(initialTableState, notify)
+ 
++  const isHost = players.some((player) => player.id === currentPlayerId && player.isHost)
++  const onlineCount = players.filter((player) => player.online).length
+   const playerHand = hands.find((hand) => hand.playerId === currentPlayerId)
+   const discardZone = zones.find((zone) => zone.id === 'discard-zone')
+   const canCreatePile = selectedCardIds.length >= 2
+@@ -223,6 +228,10 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+         notify('Hand display hidden')
+         return
+       case 'reset':
++        if (!isHost) {
++          notify('Only the host can reset the table')
++          return
++        }
+         resetGame()
+         setIsMovingDeck(false)
+         notify('Fresh deck, empty table')
+@@ -231,6 +240,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+   }
+ 
+   function handleMenuAction(action: TableAction) {
++    if (action === 'reset' && !isHost) return
+     if (action === 'reset' && !confirmingReset) {
+       setConfirmingReset(true)
+       return
+@@ -337,7 +347,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+ 
+               <span className="mx-2 text-ivory/20">·</span>
+ 
+-              {players.length} {players.length === 1 ? 'player' : 'players'}
++              {players.length} {players.length === 1 ? 'player' : 'players'} · {onlineCount} online
+             </div>
+           </div>
+ 
+@@ -398,7 +408,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+                     Hide revealed cards
+                   </MenuItem>
+                   <div className="mx-2 my-1.5 h-px bg-white/10" />
+-                  <MenuItem destructive onClick={() => handleMenuAction('reset')}>
++                  <MenuItem destructive disabled={!isHost} onClick={() => handleMenuAction('reset')}>
+                     {confirmingReset ? 'Click again to clear the table' : 'Reset table'}
+                   </MenuItem>
+                 </motion.div>
+@@ -409,6 +419,32 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+ 
+         <RevealedHands hands={hands} players={players} selfId={currentPlayerId} />
+ 
++        {connectionStatus !== 'connected' && (
++          <div aria-hidden="true" className="absolute inset-0 z-[35] cursor-wait bg-black/10" />
++        )}
++
++        {connectionStatus !== 'connected' && (
++          <div role="status" className="absolute inset-x-5 top-[5.25rem] z-[60] mx-auto max-w-md rounded-lg border border-amber-300/25 bg-black/80 px-4 py-3 text-center text-sm text-ivory shadow-lg">
++            <div className="font-medium">{connectionStatus === 'resuming' ? 'Restoring your session…' : 'Connection interrupted — reconnecting…'}</div>
++            {connectionIssue && <div className="mt-1 text-xs text-ivory/65">{connectionIssue}</div>}
++            {connectionStatus === 'reconnecting' && (
++              <button type="button" onClick={onRetryConnection} className="mt-2 rounded border border-ivory/30 px-3 py-1.5 text-xs text-ivory/85 hover:bg-white/10">Try reconnecting</button>
++            )}
++          </div>
++        )}
++
++        {connectionStatus === 'connected' && connectionIssue && (
++          <div role="alert" className="absolute inset-x-5 top-[5.25rem] z-[60] mx-auto max-w-md rounded-lg bg-black/80 px-4 py-3 text-center text-sm text-[#e08a80]">{connectionIssue}</div>
++        )}
++
++        <div aria-label="Room participants" className="pointer-events-none absolute right-5 bottom-5 z-40 hidden max-w-[17rem] flex-wrap justify-end gap-1.5 lg:flex">
++          {players.map((player) => (
++            <span key={player.id} title={player.online ? 'Online' : 'Disconnected; seat saved'} className={`rounded-full border px-2.5 py-1 text-[11px] ${player.online ? 'border-ivory/20 bg-black/25 text-ivory/80' : 'border-ivory/10 bg-black/15 text-ivory/35'}`}>
++              <span aria-hidden="true">{player.online ? '●' : '○'}</span>{' '}{player.name}{player.isHost ? ' · Host' : ''}{player.id === currentPlayerId ? ' · You' : ''}
++            </span>
++          ))}
++        </div>
++
+         <div className="pointer-events-none absolute top-5 left-1/2 z-50 -translate-x-1/2 md:top-7">
+           <AnimatePresence mode="wait">
+             {isMovingDeck ? (
+diff --git a/apps/web/src/hooks/useTableGame.ts b/apps/web/src/hooks/useTableGame.ts
+index 8ec87f5..6533427 100644
+--- a/apps/web/src/hooks/useTableGame.ts
++++ b/apps/web/src/hooks/useTableGame.ts
+@@ -16,7 +16,11 @@ export function useTableGame(initial: TableGameState, onError: (message: string)
+   const draggedRef = useRef<string | null>(null)
+ 
+   const request = (action: Action) => {
+-    socket.timeout(5000).emit('table:action', action, (error: Error | null, response?: { ok: boolean; error?: string }) => {
++    if (!socket.connected) {
++      onError('Connection lost. Your action was not sent.')
++      return
++    }
++    socket.timeout(5000).emit('table:action', { ...action, actionId: crypto.randomUUID() }, (error: Error | null, response?: { ok: boolean; error?: string }) => {
+       if (error) onError('Server did not respond. Check your connection.')
+       else if (!response?.ok) onError(response?.error ?? 'Action rejected by server.')
+     })
+diff --git a/apps/web/src/types/player.ts b/apps/web/src/types/player.ts
+index ed8076e..1b45a68 100644
+--- a/apps/web/src/types/player.ts
++++ b/apps/web/src/types/player.ts
+@@ -1,4 +1,6 @@
+ export type Player = {
+   id: string
+   name: string
+-}
+\ No newline at end of file
++  online: boolean
++  isHost: boolean
++}

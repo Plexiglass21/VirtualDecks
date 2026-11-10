@@ -1,0 +1,2705 @@
+diff --git a/README_BLOCCO1.md b/README_BLOCCO1.md
+new file mode 100644
+index 0000000..9a86eba
+--- /dev/null
++++ b/README_BLOCCO1.md
+@@ -0,0 +1,70 @@
++# VirtualDecks V1 — Blocco 1: server autoritativo e privacy
++
++## Cosa cambia
++
++- `apps/server/src/game.ts`: **unica fonte di verità** per mazzo, mani, carte sul tavolo, pile e scarti. Ogni operazione è validata prima di modificare lo stato; il contatore `version` cresce solo dopo le operazioni accettate.
++- `apps/server/src/index.ts`: gestisce Socket.IO, room membership, autorizzazione dei comandi e invio dello stato **personalizzato per giocatore**. Le carte nel mazzo non vengono trasmesse; le mani altrui non vengono trasmesse; le carte coperte sul tavolo non espongono `rank` o `suit`.
++- `apps/web/src/hooks/useTableGame.ts`: NON crea né modifica carte localmente. Invia comandi al server, mantiene soltanto selezione e anteprima delle carte trascinate.
++- `apps/web/src/components/table/TableSurface.tsx`: mantiene il design e utilizza i comandi condivisi anche per pile, scarti, movimenti e posizione del mazzo.
++- `apps/web/src/App.tsx` e `components/home/HomeScreen.tsx`: selezione mazzo francese da 52 o italiano da 40 carte al momento della creazione.
++- I componenti carta/hand/zone/pile nascondono la faccia delle carte coperte senza fare affidamento sulla sola CSS. Gli ID delle carte ora sono UUID casuali (non contengono `rank` o `suit`).
++- Rimosso `apps/server/src/table.ts` (vecchio generatore di mazzi, sostituito da `game.ts`).
++
++## Prima di applicare i file
++
++Questa modifica è stata sviluppata a partire dallo ZIP `VirtualDecks-master.zip`, non dalla versione del tuo computer dopo l'ultima correzione alla build. Lavora su un branch dedicato o conserva una copia delle modifiche locali.
++
++```bash
++git switch -c feat/authoritative-game
++```
++
++Se usi la **patch**, posizionala nella root del progetto ed esegui prima `git apply --check VirtualDecks_Blocco1.patch`, poi `git apply VirtualDecks_Blocco1.patch`. In alternativa, puoi sovrascrivere i file a partire dallo ZIP completo di progetto (che NON contiene `node_modules`).
++
++## Come avviare
++
++Richiede Node >=22.12 e npm.
++
++```bash
++npm install
++npm run dev:server
++# in un secondo terminale:
++npm run dev:web
++```
++
++Nel browser `http://localhost:5173` crea una stanza e scegli il tipo di mazzo; apri un secondo browser/incognito e inserisci il codice stanza.
++
++## Test automatici
++
++```bash
++npm run typecheck:web
++npm run test:server
++npm run build:web
++```
++
++`test:server` compila il backend e lancia i test unitari e un test reale a due client Socket.IO.
++
++## Test manuale (due browser)
++
++1. Browser A: crea stanza con mazzo francese (52). Browser B: entra col codice, verifica stesso conteggio.
++2. A: clic sul mazzo (carta sul tavolo); A e B devono vederla identica. Spostala, doppio clic per coprirla e ancora per scoprirla: entrambe le schermate devono aggiornarsi.
++3. A: Shift+clic sul mazzo. SOLO A deve vedere la nuova carta nella sua mano. B deve vedere il mazzo scalato di una carta ma non l'identità della carta privata.
++4. A: trascina la carta dalla mano al tavolo. Ora entrambi la vedono; B può spostarla.
++5. A: seleziona due carte, `P` per creare pila. B deve vedere la pila; B può estrarre la carta superiore.
++6. A: trascina una carta negli scarti; B può estrarre una carta dagli scarti. Shuffle e Reset devono avere effetto su entrambi.
++7. Ricrea una stanza con mazzo italiano: conteggio iniziale 40. Le facce italiane sono **placeholder tipografici**, non ancora illustrazioni regionali.
++
++## Protocollo Socket.IO
++
++- `room:create(deckKind, ack)` con `deckKind` `french` o `italian`.
++- `room:join(roomId, ack)`.
++- `table:action(payload, ack)` con azioni supportate: `draw-table`, `draw-hand`, `move-cards`, `front-card`, `flip-cards`, `create-pile`, `move-pile`, `front-pile`, `extract-pile`, `table-to-hand`, `hand-to-table`, `table-to-zone`, `hand-to-zone`, `extract-zone`, `shuffle`, `reset`, `move-deck`.
++- Il server emette `table:state` **separatamente** a ciascun giocatore, con `deckCount` e la sola mano autorizzata. Gli eventi `room:players` informano sulle presenze.
++- Ogni `table:action` risponde `{ok: true, version}` oppure `{ok: false, error}`.
++
++## Conclusione / limiti noti
++
++**Implementato:** stato autorevole, privacy delle mani e delle carte coperte, sincronizzazione delle operazioni esistenti, controllo di input, selezione mazzo 52/40, test base.
++
++**Ancora da completare:** riconnessione e recupero sessione dopo refresh (Blocco 3); controllo dei comandi e UI con più browser veri (smoke test manuale); rotazione carte e distribuzione di più carte con una sola azione (Blocco 2); illustrazioni tradizionali per il mazzo italiano e ottimizzazione touch (Blocco 4); deployment e persistenza delle stanze dopo riavvio (Blocco 5). La sola RAM viene mantenuta in questa fase.
++
++Nota: i test TypeScript e Socket.IO sono stati eseguiti nell'ambiente di sviluppo del report; non è stato possibile eseguire il bundling Vite in quello stesso ambiente perché le dipendenze native dello ZIP erano relative a Windows, mentre l'ambiente di test era Linux. Verifica `npm run build:web` dopo `npm install` sul tuo computer.
+diff --git a/apps/server/src/game.ts b/apps/server/src/game.ts
+new file mode 100644
+index 0000000..455254a
+--- /dev/null
++++ b/apps/server/src/game.ts
+@@ -0,0 +1,285 @@
++import { randomInt, randomUUID } from 'node:crypto'
++
++export type Point = { x: number; y: number }
++export type DeckKind = 'french' | 'italian'
++export type Card = { id: string; rank: string; suit: string }
++export type TableCard = Card & { faceUp: boolean }
++export type LooseCard = TableCard & { position: Point; zIndex: number; spawnFrom?: Point }
++export type Pile = { id: string; position: Point; zIndex: number; cards: TableCard[] }
++export type Hand = { id: string; playerId: string; cards: TableCard[] }
++export type Zone = { id: string; label: string; type: 'discard'; cards: TableCard[] }
++
++// Internal state MUST NEVER be emitted to the room. It contains every card identity.
++export type Game = {
++  deckKind: DeckKind
++  version: number
++  deck: Card[]
++  deckPosition: Point
++  looseCards: LooseCard[]
++  piles: Pile[]
++  hands: Hand[]
++  zones: Zone[]
++}
++
++// Public representations contain no data about unseen cards.
++type VisibleCard = { id: string; faceUp: boolean; rank?: string; suit?: string }
++export type GameView = {
++  deckKind: DeckKind
++  version: number
++  deckCount: number
++  deckPosition: Point
++  looseCards: (VisibleCard & { position: Point; zIndex: number; spawnFrom?: Point })[]
++  piles: { id: string; position: Point; zIndex: number; cards: VisibleCard[] }[]
++  hands: { id: string; playerId: string; cards: VisibleCard[] }[]
++  zones: { id: string; label: string; type: 'discard'; cards: VisibleCard[] }[]
++}
++
++export type Action =
++  | { type: 'draw-table'; landingPosition: Point; spawnFrom?: Point }
++  | { type: 'draw-hand' }
++  | { type: 'move-cards'; moves: { id: string; position: Point }[]; pileId?: string }
++  | { type: 'front-card'; cardId: string }
++  | { type: 'flip-cards'; cardIds: string[] }
++  | { type: 'create-pile'; cardIds: string[] }
++  | { type: 'move-pile'; pileId: string; position: Point }
++  | { type: 'front-pile'; pileId: string }
++  | { type: 'extract-pile'; pileId: string }
++  | { type: 'table-to-hand'; cardIds: string[] }
++  | { type: 'hand-to-table'; cardId: string; position: Point }
++  | { type: 'table-to-zone'; cardIds: string[]; zoneId: string }
++  | { type: 'hand-to-zone'; cardId: string; zoneId: string }
++  | { type: 'extract-zone'; zoneId: string; position: Point }
++  | { type: 'shuffle' }
++  | { type: 'reset' }
++  | { type: 'move-deck'; position: Point }
++
++const definitions: Record<DeckKind, { suits: string[]; ranks: string[] }> = {
++  french: { suits: ['♠', '♥', '♦', '♣'], ranks: ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'] },
++  italian: { suits: ['coppe', 'denari', 'bastoni', 'spade'], ranks: ['A', '2', '3', '4', '5', '6', '7', 'F', 'C', 'R'] },
++}
++
++function shuffle<T>(items: T[]): T[] {
++  const result = [...items]
++  for (let i = result.length - 1; i > 0; i--) {
++    const j = randomInt(i + 1)
++    ;[result[i], result[j]] = [result[j], result[i]]
++  }
++  return result
++}
++
++function freshDeck(kind: DeckKind): Card[] {
++  const { suits, ranks } = definitions[kind]
++  return shuffle(suits.flatMap((suit) => ranks.map((rank) => ({ id: randomUUID(), suit, rank }))))
++}
++
++export function newGame(playerId: string, deckKind: DeckKind = 'french'): Game {
++  return {
++    deckKind, version: 0, deck: freshDeck(deckKind), deckPosition: { x: 0.12, y: 0.46 },
++    looseCards: [], piles: [], hands: [{ id: `${playerId}-hand`, playerId, cards: [] }],
++    zones: [{ id: 'discard-zone', label: 'Discard', type: 'discard', cards: [] }],
++  }
++}
++
++export function addPlayer(game: Game, playerId: string) {
++  game.hands.push({ id: `${playerId}-hand`, playerId, cards: [] })
++  game.version++
++}
++
++function visibleCard(card: TableCard, reveal: boolean): VisibleCard {
++  return reveal ? { id: card.id, faceUp: card.faceUp, rank: card.rank, suit: card.suit }
++    : { id: card.id, faceUp: card.faceUp }
++}
++
++export function viewFor(game: Game, playerId: string): GameView {
++  return {
++    deckKind: game.deckKind, version: game.version, deckCount: game.deck.length,
++    deckPosition: { ...game.deckPosition },
++    looseCards: game.looseCards.map((card) => ({ ...visibleCard(card, card.faceUp), position: { ...card.position }, zIndex: card.zIndex, ...(card.spawnFrom ? { spawnFrom: { ...card.spawnFrom } } : {}) })),
++    piles: game.piles.map((pile) => ({ id: pile.id, position: { ...pile.position }, zIndex: pile.zIndex, cards: pile.cards.map((card) => visibleCard(card, card.faceUp)) })),
++    // Only the player's OWN hand is serialized. Other players' identities and card faces are omitted.
++    hands: game.hands.filter((hand) => hand.playerId === playerId).map((hand) => ({
++      id: hand.id, playerId: hand.playerId, cards: hand.cards.map((card) => visibleCard(card, true)),
++    })),
++    zones: game.zones.map((zone) => ({ id: zone.id, label: zone.label, type: zone.type, cards: zone.cards.map((card) => visibleCard(card, card.faceUp)) })),
++  }
++}
++
++const point = (value: unknown): value is Point =>
++  !!value && typeof value === 'object' && 'x' in value && 'y' in value &&
++  typeof value.x === 'number' && typeof value.y === 'number' &&
++  Number.isFinite(value.x) && Number.isFinite(value.y) &&
++  value.x >= 0 && value.x <= 1 && value.y >= 0 && value.y <= 1
++
++const record = (value: unknown): value is Record<string, unknown> =>
++  !!value && typeof value === 'object' && !Array.isArray(value)
++
++const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length < 128
++const ids = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 52 && value.every(text) && new Set(value).size === value.length
++const clamp = (number: number) => Math.min(0.96, Math.max(0.04, number))
++const maxZ = (game: Game) => Math.max(0, ...game.looseCards.map((card) => card.zIndex), ...game.piles.map((pile) => pile.zIndex))
++const asTable = (card: TableCard): TableCard => ({ id: card.id, rank: card.rank, suit: card.suit, faceUp: card.faceUp })
++const ownHand = (game: Game, playerId: string) => game.hands.find((hand) => hand.playerId === playerId)
++
++/** The only place that mutates game state. A rejected action changes nothing. */
++export function applyAction(game: Game, playerId: string, input: unknown): { ok: true; version: number } | { ok: false; error: string } {
++  const reject = (error: string): { ok: false; error: string } => ({ ok: false, error })
++  if (!record(input) || typeof input.type !== 'string') return reject('Invalid action.')
++  if (!ownHand(game, playerId)) return reject('Player not in this table.')
++  const action = input as Record<string, unknown>
++  const findCards = (cardIds: string[]) => {
++    const cards = cardIds.map((id) => game.looseCards.find((card) => card.id === id))
++    return cards.every((card) => card !== undefined) ? cards as LooseCard[] : null
++  }
++  const removeCards = (cardIds: string[]) => {
++    const remove = new Set(cardIds)
++    game.looseCards = game.looseCards.filter((card) => !remove.has(card.id))
++  }
++  const appendHand = (cards: TableCard[]) => ownHand(game, playerId)!.cards.push(...cards.map(asTable))
++  const appendZone = (zoneId: string, cards: TableCard[]) => game.zones.find((zone) => zone.id === zoneId)!.cards.push(...cards.map(asTable))
++
++  switch (action.type) {
++    case 'draw-table': {
++      if (!point(action.landingPosition) || (action.spawnFrom !== undefined && !point(action.spawnFrom))) return reject('Invalid position.')
++      if (!game.deck.length) return reject('The deck is empty.')
++      const card = game.deck.shift()!
++      const offset = (game.looseCards.length % 3) * 0.02
++      game.looseCards.push({ ...card, faceUp: true, position: { x: clamp(action.landingPosition.x + offset), y: clamp(action.landingPosition.y + offset) }, ...(action.spawnFrom ? { spawnFrom: action.spawnFrom as Point } : {}), zIndex: maxZ(game) + 1 })
++      break
++    }
++    case 'draw-hand': {
++      if (!game.deck.length) return reject('The deck is empty.')
++      appendHand([{ ...game.deck.shift()!, faceUp: true }])
++      break
++    }
++    case 'move-cards': {
++      if (!Array.isArray(action.moves) || !action.moves.length || action.moves.length > 52 || !action.moves.every((move) => record(move) && text(move.id) && point(move.position))) return reject('Invalid card movement.')
++      const moves = action.moves as { id: string; position: Point }[]
++      if (!ids(moves.map((move) => move.id))) return reject('Duplicate cards.')
++      const cards = findCards(moves.map((move) => move.id))
++      if (!cards) return reject('Card no longer on the table.')
++      if (action.pileId !== undefined) {
++        if (!text(action.pileId)) return reject('Invalid pile.')
++        const pile = game.piles.find((pile) => pile.id === action.pileId)
++        if (!pile) return reject('Pile not found.')
++        // Proximity is checked on the server, not merely by the drag UI.
++        if (moves.some((move) => Math.abs(move.position.x - pile.position.x) > 0.08 || Math.abs(move.position.y - pile.position.y) > 0.08)) return reject('Drop must be on the pile.')
++        pile.cards.push(...cards.sort((a, b) => a.zIndex - b.zIndex).map(asTable))
++        pile.zIndex = maxZ(game) + 1
++        removeCards(cards.map((card) => card.id))
++      } else {
++        const byId = new Map(moves.map((move) => [move.id, move.position]))
++        game.looseCards = game.looseCards.map((card) => byId.has(card.id) ? { ...card, position: byId.get(card.id)! } : card)
++      }
++      break
++    }
++    case 'front-card': {
++      if (!text(action.cardId)) return reject('Invalid card.')
++      const card = game.looseCards.find((card) => card.id === action.cardId)
++      if (!card) return reject('Card not found.')
++      card.zIndex = maxZ(game) + 1
++      break
++    }
++    case 'flip-cards': {
++      if (!ids(action.cardIds)) return reject('Select valid cards.')
++      const cards = findCards(action.cardIds)
++      if (!cards) return reject('Card no longer on the table.')
++      for (const card of cards) card.faceUp = !card.faceUp
++      break
++    }
++    case 'create-pile': {
++      if (!ids(action.cardIds) || action.cardIds.length < 2) return reject('Select at least two cards.')
++      const cards = findCards(action.cardIds)
++      if (!cards) return reject('Card no longer on the table.')
++      cards.sort((a, b) => a.zIndex - b.zIndex)
++      game.piles.push({ id: randomUUID(), position: { ...cards[cards.length - 1].position }, zIndex: maxZ(game) + 1, cards: cards.map(asTable) })
++      removeCards(action.cardIds)
++      break
++    }
++    case 'move-pile': {
++      if (!text(action.pileId) || !point(action.position)) return reject('Invalid pile or position.')
++      const pile = game.piles.find((pile) => pile.id === action.pileId)
++      if (!pile) return reject('Pile not found.')
++      pile.position = action.position
++      break
++    }
++    case 'front-pile': {
++      if (!text(action.pileId)) return reject('Invalid pile.')
++      const pile = game.piles.find((pile) => pile.id === action.pileId)
++      if (!pile) return reject('Pile not found.')
++      pile.zIndex = maxZ(game) + 1
++      break
++    }
++    case 'extract-pile': {
++      if (!text(action.pileId)) return reject('Invalid pile.')
++      const pile = game.piles.find((pile) => pile.id === action.pileId)
++      if (!pile || !pile.cards.length) return reject('Pile is empty or missing.')
++      const card = pile.cards.pop()!
++      game.looseCards.push({ ...card, position: { x: clamp(pile.position.x + 0.06), y: clamp(pile.position.y + 0.04) }, spawnFrom: pile.position, zIndex: maxZ(game) + 1 })
++      if (!pile.cards.length) game.piles = game.piles.filter((candidate) => candidate.id !== pile.id)
++      break
++    }
++    case 'table-to-hand': {
++      if (!ids(action.cardIds)) return reject('Invalid cards.')
++      const cards = findCards(action.cardIds)
++      if (!cards) return reject('Card no longer on the table.')
++      appendHand(cards.sort((a, b) => a.zIndex - b.zIndex))
++      removeCards(action.cardIds)
++      break
++    }
++    case 'hand-to-table': {
++      if (!text(action.cardId) || !point(action.position)) return reject('Invalid card or position.')
++      const hand = ownHand(game, playerId)!
++      const card = hand.cards.find((card) => card.id === action.cardId)
++      if (!card) return reject('Card is not in your hand.')
++      hand.cards = hand.cards.filter((candidate) => candidate.id !== card.id)
++      game.looseCards.push({ ...card, position: action.position, zIndex: maxZ(game) + 1 })
++      break
++    }
++    case 'table-to-zone': {
++      if (!ids(action.cardIds) || !text(action.zoneId)) return reject('Invalid cards or zone.')
++      if (!game.zones.some((zone) => zone.id === action.zoneId)) return reject('Zone not found.')
++      const cards = findCards(action.cardIds)
++      if (!cards) return reject('Card no longer on the table.')
++      appendZone(action.zoneId, cards.sort((a, b) => a.zIndex - b.zIndex))
++      removeCards(action.cardIds)
++      break
++    }
++    case 'hand-to-zone': {
++      if (!text(action.cardId) || !text(action.zoneId)) return reject('Invalid card or zone.')
++      const hand = ownHand(game, playerId)!
++      const card = hand.cards.find((card) => card.id === action.cardId)
++      if (!card || !game.zones.some((zone) => zone.id === action.zoneId)) return reject('Card or zone not found.')
++      hand.cards = hand.cards.filter((candidate) => candidate.id !== card.id)
++      appendZone(action.zoneId, [card])
++      break
++    }
++    case 'extract-zone': {
++      if (!text(action.zoneId) || !point(action.position)) return reject('Invalid zone or position.')
++      const zone = game.zones.find((zone) => zone.id === action.zoneId)
++      if (!zone || !zone.cards.length) return reject('Zone is empty or missing.')
++      game.looseCards.push({ ...zone.cards.pop()!, position: action.position, zIndex: maxZ(game) + 1 })
++      break
++    }
++    case 'shuffle':
++      game.deck = shuffle(game.deck)
++      break
++    case 'reset': {
++      game.deck = freshDeck(game.deckKind)
++      game.deckPosition = { x: 0.12, y: 0.46 }
++      game.looseCards = []
++      game.piles = []
++      for (const hand of game.hands) hand.cards = []
++      for (const zone of game.zones) zone.cards = []
++      break
++    }
++    case 'move-deck':
++      if (!point(action.position)) return reject('Invalid deck position.')
++      game.deckPosition = action.position
++      break
++    default:
++      return reject('Unknown action.')
++  }
++
++  game.version++
++  return { ok: true, version: game.version }
++}
+diff --git a/apps/server/src/index.ts b/apps/server/src/index.ts
+index d8a7bc1..554535d 100644
+--- a/apps/server/src/index.ts
++++ b/apps/server/src/index.ts
+@@ -1,316 +1,114 @@
+ import { createServer } from 'node:http'
+-import { randomUUID } from 'node:crypto'
++import { randomInt, randomUUID } from 'node:crypto'
+ import { Server } from 'socket.io'
+-import {
+-  createTable,
+-  type NormalizedPosition,
+-  type TableGameState,
+-} from './table.js'
+-
+-type Player = {
+-  id: string
+-  name: string
+-}
+-
+-type Room = {
+-  id: string
+-  players: Player[]
+-  table: TableGameState
+-}
+-
+-type RoomSuccessResponse = {
+-  ok: true
+-  roomId: string
+-  playerId: string
+-  players: Player[]
+-  table: TableGameState
+-}
+-
+-type RoomErrorResponse = {
+-  ok: false
+-  error: string
+-}
++import { addPlayer, applyAction, newGame, viewFor, type DeckKind, type Game } from './game.js'
+ 
++type Player = { id: string; name: string }
++type Room = { id: string; players: Player[]; game: Game }
+ type RoomResponse =
+-  | RoomSuccessResponse
+-  | RoomErrorResponse
+-
+-type CreateRoomAck = (response: RoomResponse) => void
+-type JoinRoomAck = (response: RoomResponse) => void
++  | { ok: true; roomId: string; playerId: string; players: Player[]; table: ReturnType<typeof viewFor> }
++  | { ok: false; error: string }
++type ActionResponse = ReturnType<typeof applyAction>
++type SocketData = { roomId?: string; playerId?: string }
+ 
+ interface ClientToServerEvents {
+-  'room:create': (
+-    callback: CreateRoomAck,
+-  ) => void
+-
+-  'room:join': (
+-    roomId: string,
+-    callback: JoinRoomAck,
+-  ) => void
+-
+-  'table:draw': (payload: {
+-    landingPosition: NormalizedPosition
+-    spawnFrom?: NormalizedPosition
+-  }) => void
++  'room:create': (deckKind: DeckKind, ack: (response: RoomResponse) => void) => void
++  'room:join': (roomCode: string, ack: (response: RoomResponse) => void) => void
++  'table:action': (action: unknown, ack: (response: ActionResponse) => void) => void
+ }
+-
+ interface ServerToClientEvents {
+   'room:players': (players: Player[]) => void
+-  'table:state': (table: TableGameState) => void
+-}
+-
+-interface SocketData {
+-  roomId?: string
+-  playerId?: string
++  'table:state': (table: ReturnType<typeof viewFor>) => void
+ }
+ 
+-const PORT = 3001
+-
++const PORT = Number(process.env.PORT || 3001)
++const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173').split(',').map((origin) => origin.trim())
++const MAX_PLAYERS = 8
++const roomCodes = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+ const rooms = new Map<string, Room>()
+-
+-const httpServer = createServer()
+-
+-const io = new Server<
+-  ClientToServerEvents,
+-  ServerToClientEvents,
+-  Record<string, never>,
+-  SocketData
+->(httpServer, {
+-  cors: {
+-    origin: 'http://localhost:5173',
+-  },
++const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>(createServer(), {
++  cors: { origin: allowedOrigins },
+ })
+ 
+-function createRoomCode() {
+-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+-
+-  let code = ''
+-
++function roomCode() {
++  let code: string
+   do {
+-    code = Array.from(
+-      { length: 4 },
+-      () => alphabet[Math.floor(Math.random() * alphabet.length)],
+-    ).join('')
++    code = Array.from({ length: 4 }, () => roomCodes[randomInt(roomCodes.length)]).join('')
+   } while (rooms.has(code))
+-
+   return code
+ }
+ 
+-function createPlayer(room: Room): Player {
+-  return {
+-    id: randomUUID(),
+-    name: `Player ${room.players.length + 1}`,
++function publish(room: Room) {
++  // Never io.to(room.id).emit('table:state', room.game): its deck and hands are confidential!
++  for (const player of room.players) {
++    io.to(`${room.id}:${player.id}`).emit('table:state', viewFor(room.game, player.id))
+   }
+ }
+ 
+ io.on('connection', (socket) => {
+-  console.log('Socket connected:', socket.id)
+-
+-  socket.on('room:create', (callback) => {
+-    if (socket.data.roomId) {
+-      callback({
+-        ok: false,
+-        error: 'You are already inside a room.',
+-      })
+-
+-      return
+-    }
+-
+-    const roomId = createRoomCode()
+-
+-    const temporaryRoom: Room = {
+-      id: roomId,
+-      players: [],
+-      table: {} as TableGameState,
+-    }
+-
+-    const player = createPlayer(temporaryRoom)
+-
+-    const room: Room = {
+-      id: roomId,
+-      players: [player],
+-      table: createTable(player.id),
+-    }
+-
+-    rooms.set(roomId, room)
+-
+-    socket.join(roomId)
+-
+-    socket.data.roomId = roomId
++  socket.on('room:create', (deckKind, ack) => {
++    if (typeof ack !== 'function') return
++    if (socket.data.roomId) return ack({ ok: false, error: 'You are already in a room.' })
++    if (deckKind !== 'french' && deckKind !== 'italian') return ack({ ok: false, error: 'Unknown deck type.' })
++
++    const id = roomCode()
++    const player: Player = { id: randomUUID(), name: 'Player 1' }
++    const room: Room = { id, players: [player], game: newGame(player.id, deckKind) }
++    rooms.set(id, room)
++    socket.data.roomId = id
+     socket.data.playerId = player.id
+-
+-    console.log(`Room ${roomId} created by ${player.name}`)
+-
+-    callback({
+-      ok: true,
+-      roomId,
+-      playerId: player.id,
+-      players: room.players,
+-      table: room.table,
+-    })
+-
+-    io.to(roomId).emit('room:players', room.players)
++    socket.join(id)
++    socket.join(`${id}:${player.id}`)
++    ack({ ok: true, roomId: id, playerId: player.id, players: room.players, table: viewFor(room.game, player.id) })
++    io.to(id).emit('room:players', room.players)
+   })
+ 
+-  socket.on('room:join', (rawRoomId, callback) => {
+-    if (socket.data.roomId) {
+-      callback({
+-        ok: false,
+-        error: 'You are already inside a room.',
+-      })
+-
+-      return
+-    }
+-
+-    const roomId = rawRoomId.trim().toUpperCase()
+-
+-    const room = rooms.get(roomId)
+-
+-    if (!room) {
+-      callback({
+-        ok: false,
+-        error: 'Room not found.',
+-      })
+-
+-      return
+-    }
+-
+-    const player = createPlayer(room)
++  socket.on('room:join', (rawCode, ack) => {
++    if (typeof ack !== 'function') return
++    if (socket.data.roomId) return ack({ ok: false, error: 'You are already in a room.' })
++    if (typeof rawCode !== 'string' || !/^[A-Z2-9]{4}$/i.test(rawCode)) return ack({ ok: false, error: 'Invalid room code.' })
++    const id = rawCode.trim().toUpperCase()
++    const room = rooms.get(id)
++    if (!room) return ack({ ok: false, error: 'Room not found.' })
++    if (room.players.length >= MAX_PLAYERS) return ack({ ok: false, error: 'Room is full.' })
+ 
++    const player: Player = { id: randomUUID(), name: `Player ${room.players.length + 1}` }
+     room.players.push(player)
+-
+-    room.table.hands.push({
+-      id: `${player.id}-hand`,
+-      playerId: player.id,
+-      cards: [],
+-    })
+-
+-    socket.join(roomId)
+-
+-    socket.data.roomId = roomId
++    addPlayer(room.game, player.id)
++    socket.data.roomId = id
+     socket.data.playerId = player.id
+-
+-    console.log(`${player.name} joined room ${roomId}`)
+-
+-    callback({
+-      ok: true,
+-      roomId,
+-      playerId: player.id,
+-      players: room.players,
+-      table: room.table,
+-    })
+-
+-    io.to(roomId).emit('room:players', room.players)
++    socket.join(id)
++    socket.join(`${id}:${player.id}`)
++    ack({ ok: true, roomId: id, playerId: player.id, players: room.players, table: viewFor(room.game, player.id) })
++    io.to(id).emit('room:players', room.players)
++    publish(room)
+   })
+ 
+-  socket.on('disconnect', () => {
+-    const roomId = socket.data.roomId
+-    const playerId = socket.data.playerId
+-
+-    if (!roomId || !playerId) {
+-      return
++  socket.on('table:action', (action, ack) => {
++    if (typeof ack !== 'function') return
++    const { roomId, playerId } = socket.data
++    const room = roomId ? rooms.get(roomId) : undefined
++    if (!room || !playerId || !room.players.some((player) => player.id === playerId)) {
++      return ack({ ok: false, error: 'You are not in an active room.' })
+     }
+-
+-    const room = rooms.get(roomId)
+-
+-    if (!room) {
+-      return
+-    }
+-
+-    room.players = room.players.filter(
+-      (player) => player.id !== playerId,
+-    )
+-
+-    if (room.players.length === 0) {
+-      rooms.delete(roomId)
+-
+-      console.log(`Room ${roomId} deleted`)
+-
+-      return
+-    }
+-
+-    io.to(roomId).emit('room:players', room.players)
++    const result = applyAction(room.game, playerId, action)
++    ack(result)
++    if (result.ok) publish(room)
+   })
+ 
+-  socket.on('table:draw', (payload) => {
+-    const roomId = socket.data.roomId
+-
+-    if (!roomId) {
+-      return
+-    }
+-
+-    const room = rooms.get(roomId)
+-
+-    if (!room) {
+-      return
+-    }
+-
+-    const [drawnCard, ...remainingDeck] =
+-      room.table.deck
+-
+-    if (!drawnCard) {
+-      return
+-    }
+-
+-    const maxZIndex = Math.max(
+-      0,
+-      ...room.table.looseCards.map(
+-        (card) => card.zIndex,
+-      ),
+-      ...room.table.piles.map(
+-        (pile) => pile.zIndex,
+-      ),
+-    )
+-
+-    const offset =
+-      (room.table.looseCards.length % 3) * 0.02
+-
+-    const looseCard = {
+-      ...drawnCard,
+-
+-      faceUp: true,
+-
+-      position: {
+-        x: Math.min(
+-          0.96,
+-          Math.max(
+-            0.04,
+-            payload.landingPosition.x + offset,
+-          ),
+-        ),
+-
+-        y: Math.min(
+-          0.92,
+-          Math.max(
+-            0.08,
+-            payload.landingPosition.y + offset,
+-          ),
+-        ),
+-      },
+-
+-      spawnFrom: payload.spawnFrom,
+-
+-      zIndex: maxZIndex + 1,
+-    }
+-
+-    room.table = {
+-      ...room.table,
+-
+-      deck: remainingDeck,
+-
+-      looseCards: [
+-        ...room.table.looseCards,
+-        looseCard,
+-      ],
++  socket.on('disconnect', () => {
++    const { roomId, playerId } = socket.data
++    const room = roomId ? rooms.get(roomId) : undefined
++    if (!room || !playerId) return
++    room.players = room.players.filter((player) => player.id !== playerId)
++    // In this first block, disconnected users lose their session. Rejoin tokens
++    // and disconnect grace periods are explicitly part of Block 3.
++    if (!room.players.length) {
++      rooms.delete(room.id)
++    } else {
++      io.to(room.id).emit('room:players', room.players)
+     }
+-
+-    io.to(roomId).emit(
+-      'table:state',
+-      room.table,
+-    )
+   })
+ })
+ 
+-httpServer.listen(PORT, () => {
+-  console.log(`VirtualDecks server running on http://localhost:${PORT}`)
+-})
+\ No newline at end of file
++io.httpServer.listen(PORT, () => console.log(`VirtualDecks server listening on http://localhost:${PORT}`))
+diff --git a/apps/server/src/table.ts b/apps/server/src/table.ts
+deleted file mode 100644
+index 60ced56..0000000
+--- a/apps/server/src/table.ts
++++ /dev/null
+@@ -1,107 +0,0 @@
+-export type NormalizedPosition = {
+-  x: number
+-  y: number
+-}
+-
+-export type Suit = '♠' | '♥' | '♦' | '♣'
+-
+-export type Rank =| 'A'| '2'| '3'| '4'| '5'| '6'| '7'| '8'| '9'| '10'| 'J'| 'Q'| 'K'
+-
+-export type Card = {
+-  id: string
+-  rank: Rank
+-  suit: Suit
+-}
+-
+-export type TableCard = Card & {
+-  faceUp: boolean
+-}
+-
+-export type LooseCard = TableCard & {
+-  position: NormalizedPosition
+-  zIndex: number
+-  spawnFrom?: NormalizedPosition
+-}
+-
+-export type Hand = {
+-  id: string
+-  playerId: string
+-  cards: TableCard[]
+-}
+-
+-export type Zone = {
+-  id: string
+-  label: string
+-  type: 'generic' | 'discard' | 'community'
+-  cards: TableCard[]
+-}
+-
+-export type Pile = {
+-  id: string
+-  position: NormalizedPosition
+-  zIndex: number
+-  cards: TableCard[]
+-}
+-
+-export type TableGameState = {
+-  deck: Card[]
+-  looseCards: LooseCard[]
+-  piles: Pile[]
+-  hands: Hand[]
+-  zones: Zone[]
+-}
+-
+-const suits: Suit[] = ['♠', '♥', '♦', '♣']
+-
+-const ranks: Rank[] = ['A','2','3','4','5','6','7','8','9','10','J','Q','K',]
+-
+-function createDeck(): Card[] {
+-  return suits.flatMap((suit) =>
+-    ranks.map((rank) => ({
+-      id: `${rank}-${suit}`,
+-      rank,
+-      suit,
+-    })),
+-  )
+-}
+-
+-function shuffle<T>(items: T[]): T[] {
+-  const result = [...items]
+-
+-  for (let i = result.length - 1; i > 0; i -= 1) {
+-    const j = Math.floor(Math.random() * (i + 1))
+-
+-    ;[result[i], result[j]] = [result[j], result[i]]
+-  }
+-
+-  return result
+-}
+-
+-export function createTable(
+-  firstPlayerId: string,
+-): TableGameState {
+-  return {
+-    deck: shuffle(createDeck()),
+-
+-    looseCards: [],
+-
+-    piles: [],
+-
+-    hands: [
+-      {
+-        id: `${firstPlayerId}-hand`,
+-        playerId: firstPlayerId,
+-        cards: [],
+-      },
+-    ],
+-
+-    zones: [
+-      {
+-        id: 'discard-zone',
+-        label: 'Discard',
+-        type: 'discard',
+-        cards: [],
+-      },
+-    ],
+-  }
+-}
+\ No newline at end of file
+diff --git a/apps/server/test/game.test.mjs b/apps/server/test/game.test.mjs
+new file mode 100644
+index 0000000..3fe588f
+--- /dev/null
++++ b/apps/server/test/game.test.mjs
+@@ -0,0 +1,91 @@
++import { test } from 'node:test'
++import assert from 'node:assert/strict'
++import { newGame, addPlayer, applyAction, viewFor } from '../dist/game.js'
++
++const validPosition = { x: 0.5, y: 0.5 }
++const countCards = (game) => game.deck.length + game.looseCards.length + game.hands.reduce((n, hand) => n + hand.cards.length, 0) + game.piles.reduce((n, pile) => n + pile.cards.length, 0) + game.zones.reduce((n, zone) => n + zone.cards.length, 0)
++
++test('French 52, Italian 40, opaque IDs unique and unrelated to faces', () => {
++  for (const [kind, size] of [['french', 52], ['italian', 40]]) {
++    const game = newGame('alice', kind)
++    assert.equal(game.deck.length, size)
++    assert.equal(new Set(game.deck.map(c => c.id)).size, size)
++    assert.ok(game.deck.every(c => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(c.id)))
++    assert.equal(viewFor(game, 'alice').deckCount, size)
++    assert.equal('deck' in viewFor(game, 'alice'), false)
++  }
++})
++
++test('Every client sees only their own hand; face-down cards hide rank and suit', () => {
++  const game = newGame('alice')
++  addPlayer(game, 'bob')
++  assert.equal(applyAction(game, 'alice', { type: 'draw-hand' }).ok, true)
++  const alice = viewFor(game, 'alice')
++  const bob = viewFor(game, 'bob')
++  assert.equal(alice.hands.length, 1)
++  assert.equal(bob.hands.length, 1)
++  assert.equal(alice.hands[0].cards.length, 1)
++  assert.equal(bob.hands[0].cards.length, 0)
++  const secretId = alice.hands[0].cards[0].id
++  assert.equal(JSON.stringify(bob).includes(secretId), false)
++  assert.equal(applyAction(game, 'bob', { type: 'hand-to-table', cardId: secretId, position: validPosition }).ok, false)
++  assert.equal(applyAction(game, 'alice', { type: 'hand-to-table', cardId: secretId, position: validPosition }).ok, true)
++  assert.equal(applyAction(game, 'bob', { type: 'flip-cards', cardIds: [secretId] }).ok, true)
++  assert.equal(viewFor(game, 'bob').looseCards[0].rank, undefined)
++  assert.equal(viewFor(game, 'alice').looseCards[0].suit, undefined)
++})
++
++test('Server rejects bad input without changing version or cards', () => {
++  const game = newGame('alice')
++  const originalVersion = game.version
++  const cases = [null, { type: 'draw-table', landingPosition: { x: NaN, y: 0.5 } },
++    { type: 'move-cards', moves: [{ id: 'nonexistent', position: validPosition }] },
++    { type: 'flip-cards', cardIds: ['x', 'x'] }, { type: 'reset', admin: true, id: 'ignored' },
++  ]
++  for (const action of cases.filter(a => a?.type !== 'reset')) {
++    assert.equal(applyAction(game, 'alice', action).ok, false)
++  }
++  assert.equal(game.version, originalVersion)
++  assert.equal(countCards(game), 52)
++})
++
++test('All card operations preserve total cards, reject stale simultaneous moves', () => {
++  const game = newGame('alice')
++  addPlayer(game, 'bob')
++  assert.equal(applyAction(game, 'alice', { type: 'draw-table', landingPosition: validPosition }).ok, true)
++  assert.equal(applyAction(game, 'bob', { type: 'draw-table', landingPosition: { x: 0.65, y: 0.5 } }).ok, true)
++  const ids = game.looseCards.map(c => c.id)
++  assert.equal(applyAction(game, 'alice', { type: 'create-pile', cardIds: ids }).ok, true)
++  assert.equal(countCards(game), 52)
++  assert.equal(applyAction(game, 'bob', { type: 'table-to-hand', cardIds: [ids[0]] }).ok, false)
++  const pileId = game.piles[0].id
++  assert.equal(applyAction(game, 'bob', { type: 'extract-pile', pileId }).ok, true)
++  assert.equal(countCards(game), 52)
++  const freeId = game.looseCards[0].id
++  assert.equal(applyAction(game, 'alice', { type: 'table-to-zone', zoneId: 'discard-zone', cardIds: [freeId] }).ok, true)
++  assert.equal(applyAction(game, 'alice', { type: 'extract-zone', zoneId: 'discard-zone', position: validPosition }).ok, true)
++  assert.equal(applyAction(game, 'bob', { type: 'table-to-hand', cardIds: [freeId] }).ok, true)
++  assert.equal(applyAction(game, 'alice', { type: 'table-to-hand', cardIds: [freeId] }).ok, false)
++  assert.equal(countCards(game), 52)
++  assert.equal(applyAction(game, 'alice', { type: 'reset' }).ok, true)
++  assert.equal(countCards(game), 52)
++})
++
++
++test('Face-down cards stay confidential inside piles and discard zones', () => {
++  const game = newGame('alice')
++  applyAction(game, 'alice', { type: 'draw-table', landingPosition: { x: .3, y: .4 } })
++  applyAction(game, 'alice', { type: 'draw-table', landingPosition: { x: .4, y: .4 } })
++  const ids = game.looseCards.map(c => c.id)
++  assert.equal(applyAction(game, 'alice', { type: 'flip-cards', cardIds: ids }).ok, true)
++  assert.equal(applyAction(game, 'alice', { type: 'create-pile', cardIds: ids }).ok, true)
++  const pileView = viewFor(game, 'alice').piles[0]
++  assert.equal(pileView.cards[0].rank, undefined)
++  assert.equal(pileView.cards[1].suit, undefined)
++  applyAction(game, 'alice', { type: 'extract-pile', pileId: pileView.id })
++  assert.equal(applyAction(game, 'alice', { type: 'table-to-zone', zoneId: 'discard-zone', cardIds: [ids[1]] }).ok, true)
++  const visibleDiscard = viewFor(game, 'alice').zones[0].cards[0]
++  assert.equal(visibleDiscard.rank, undefined)
++  assert.equal(visibleDiscard.suit, undefined)
++  assert.equal(countCards(game), 52)
++})
+diff --git a/apps/server/test/socket.test.mjs b/apps/server/test/socket.test.mjs
+new file mode 100644
+index 0000000..7eb5032
+--- /dev/null
++++ b/apps/server/test/socket.test.mjs
+@@ -0,0 +1,62 @@
++import { test } from 'node:test'
++import assert from 'node:assert/strict'
++import { spawn } from 'node:child_process'
++import { randomInt } from 'node:crypto'
++import { io } from 'socket.io-client'
++
++const pause = (ms) => new Promise(resolve => setTimeout(resolve, ms))
++const connect = (url) => new Promise((resolve, reject) => {
++  const client = io(url, { reconnection: false, timeout: 1000, forceNew: true })
++  client.once('connect', () => resolve(client))
++  client.once('connect_error', reject)
++})
++const ack = (client, event, ...args) => client.timeout(1500).emitWithAck(event, ...args)
++const nextState = (client) => new Promise((resolve) => client.once('table:state', resolve))
++
++test('Two real Socket.IO clients: room and draw synchronized, hands kept private', async (t) => {
++  const port = randomInt(31000, 39000)
++  const url = `http://127.0.0.1:${port}`
++  const server = spawn(process.execPath, ['apps/server/dist/index.js'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port) }, stdio: 'pipe' })
++  t.after(() => server.kill())
++  let a, b, outsider
++  t.after(() => { a?.disconnect(); b?.disconnect(); outsider?.disconnect() })
++  let lastError
++  for (let attempt = 0; attempt < 30; attempt++) {
++    try { a = await connect(url); break }
++    catch (error) { lastError = error; await pause(75) }
++  }
++  if (!a) throw lastError
++  b = await connect(url)
++  outsider = await connect(url)
++  const room = await ack(a, 'room:create', 'french')
++  assert.equal(room.ok, true)
++  assert.equal(room.table.deckCount, 52)
++  assert.equal(room.table.deck, undefined)
++  assert.equal((await ack(b, 'room:join', room.roomId)).ok, true)
++  assert.equal((await ack(outsider, 'table:action', { type: 'draw-hand' })).ok, false)
++
++  const aNext = nextState(a)
++  const bNext = nextState(b)
++  assert.equal((await ack(a, 'table:action', { type: 'draw-hand' })).ok, true)
++  const [aView, bView] = await Promise.all([aNext, bNext])
++  assert.equal(aView.deckCount, 51)
++  assert.equal(bView.deckCount, 51)
++  assert.equal(aView.hands.length, 1)
++  assert.equal(aView.hands[0].cards.length, 1)
++  assert.equal(bView.hands.length, 1)
++  assert.equal(bView.hands[0].cards.length, 0)
++  assert.equal(JSON.stringify(bView).includes(aView.hands[0].cards[0].id), false)
++  assert.equal((await ack(b, 'table:action', { type: 'hand-to-table', cardId: aView.hands[0].cards[0].id, position: { x: .5, y: .5 } })).ok, false)
++  assert.equal((await ack(a, 'table:action', { type: 'hand-to-table', cardId: aView.hands[0].cards[0].id, position: { x: .5, y: .5 } })).ok, true)
++  assert.equal((await ack(b, 'table:action', { type: 'flip-cards', cardIds: [aView.hands[0].cards[0].id] })).ok, true)
++  const hidden = await nextStateAfterAction(b, ack(b, 'table:action', { type: 'move-cards', moves: [{ id: aView.hands[0].cards[0].id, position: { x: .4, y: .4 } }] }))
++  assert.equal(hidden.looseCards[0].faceUp, false)
++  assert.equal(hidden.looseCards[0].rank, undefined)
++  assert.equal(hidden.looseCards[0].suit, undefined)
++})
++
++async function nextStateAfterAction(client, command) {
++  const state = nextState(client)
++  await command
++  return state
++}
+diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
+index b00662c..a78b6a6 100644
+--- a/apps/web/src/App.tsx
++++ b/apps/web/src/App.tsx
+@@ -110,7 +110,7 @@ function App() {
+     setScreen('table')
+   }
+ 
+-  function createRoom() {
++  function createRoom(deckKind: 'french' | 'italian') {
+     setRoomError(null)
+     setIsConnecting(true)
+ 
+@@ -120,6 +120,7 @@ function App() {
+ 
+     socket.emit(
+       'room:create',
++      deckKind,
+       (response: RoomResponse) => {
+         enterRoom(response)
+       },
+diff --git a/apps/web/src/components/card/CardCollectionDialog.tsx b/apps/web/src/components/card/CardCollectionDialog.tsx
+index fb3b445..84774f9 100644
+--- a/apps/web/src/components/card/CardCollectionDialog.tsx
++++ b/apps/web/src/components/card/CardCollectionDialog.tsx
+@@ -61,7 +61,7 @@ export function CardCollectionDialog({
+             {cards.map((card, index) => (
+               <li key={`${card.id}-${index}`} className="flex flex-col items-center gap-2">
+                 <div className="aspect-[7/10] w-24">
+-                  {card.faceUp ? (
++                  {card.faceUp && card.rank && card.suit ? (
+                     <CardFront rank={card.rank} suit={card.suit} />
+                   ) : (
+                     <CardBack />
+diff --git a/apps/web/src/components/card/CardFront.tsx b/apps/web/src/components/card/CardFront.tsx
+index 5e0f423..181b3cd 100644
+--- a/apps/web/src/components/card/CardFront.tsx
++++ b/apps/web/src/components/card/CardFront.tsx
+@@ -81,6 +81,17 @@ function CourtPanel({ rank, suit }: CardFrontProps) {
+ }
+ 
+ export function CardFront({ rank, suit }: CardFrontProps) {
++  // Temporary readable Italian card face; traditional artwork belongs to Block 4.
++  if (['coppe', 'denari', 'bastoni', 'spade'].includes(suit)) {
++    const suitLabels: Record<string, string> = { coppe: 'COPPE', denari: 'DENARI', bastoni: 'BASTONI', spade: 'SPADE' }
++    const rankLabels: Record<string, string> = { A: 'ASSO', F: 'FANTE', C: 'CAVALLO', R: 'RE' }
++    return <div className="card-face flex h-full w-full flex-col items-center justify-between overflow-hidden rounded-lg border-4 border-double border-suit-red/50 p-3 text-suit-black">
++      <span className="self-start text-lg font-bold">{rank}</span>
++      <span className="font-display text-center text-xl font-bold tracking-wide">{rankLabels[rank] ?? rank}<span className="mt-2 block text-xs font-semibold tracking-widest">{suitLabels[suit]}</span></span>
++      <span className="self-end rotate-180 text-lg font-bold">{rank}</span>
++    </div>
++  }
++
+   const colorClass = isRedSuit(suit) ? 'text-suit-red' : 'text-suit-black'
+ 
+   return (
+diff --git a/apps/web/src/components/card/PlayingCard.tsx b/apps/web/src/components/card/PlayingCard.tsx
+index b69e445..032e4de 100644
+--- a/apps/web/src/components/card/PlayingCard.tsx
++++ b/apps/web/src/components/card/PlayingCard.tsx
+@@ -6,8 +6,8 @@ import { CardBack } from './CardBack'
+ import { CardFront } from './CardFront'
+ 
+ type PlayingCardProps = {
+-  rank: string
+-  suit: string
++  rank?: string
++  suit?: string
+   dragConstraintsRef: RefObject<HTMLElement | null>
+   tableSize: ElementSize
+   position: NormalizedPosition
+@@ -35,7 +35,7 @@ function isAdditive(event: { shiftKey: boolean, ctrlKey: boolean, metaKey: boole
+ }
+ 
+ // Small, stable tilt per card so the table doesn't look like a spreadsheet.
+-function getCardTilt(rank: string, suit: string) {
++function getCardTilt(rank = '', suit = '') {
+   const code = `${rank}${suit}`
+     .split('')
+     .reduce((sum, char) => sum + char.charCodeAt(0), 0)
+@@ -150,7 +150,7 @@ export function PlayingCard({
+       initial={{ opacity: 0, scale: 0.92 }}
+       animate={{ opacity: 1, scale: 1 }}
+       transition={{ duration: 0.2 }}
+-      aria-label={faceUp ? `${rank} of ${suit}` : 'Face-down card'}
++      aria-label={faceUp && rank && suit ? `${rank} of ${suit}` : 'Face-down card'}
+       aria-pressed={selected}
+       className={`group absolute top-1/2 left-1/2 h-40 w-28 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-lg select-none active:cursor-grabbing ${
+         selected ? 'outline-2 outline-offset-[3px] outline-gold' : ''
+@@ -160,12 +160,12 @@ export function PlayingCard({
+         <motion.div
+           className="relative h-full w-full"
+           initial={false}
+-          animate={{ rotateY: faceUp ? 0 : 180 }}
++          animate={{ rotateY: faceUp && rank && suit ? 0 : 180 }}
+           transition={{ duration: 0.4, ease: [0.3, 0.7, 0.2, 1] }}
+           style={{ transformStyle: 'preserve-3d' }}
+         >
+           <div className="absolute inset-0" style={{ backfaceVisibility: 'hidden' }}>
+-            <CardFront rank={rank} suit={suit} />
++            {rank && suit ? <CardFront rank={rank} suit={suit} /> : <CardBack />}
+           </div>
+ 
+           <div
+diff --git a/apps/web/src/components/hand/HandView.tsx b/apps/web/src/components/hand/HandView.tsx
+index 04cdf69..89c0f7c 100644
+--- a/apps/web/src/components/hand/HandView.tsx
++++ b/apps/web/src/components/hand/HandView.tsx
+@@ -84,7 +84,7 @@ export function HandView({
+               whileHover={{ y: arc - 22 }}
+               transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+             >
+-              {card.faceUp ? (
++              {card.faceUp && card.rank && card.suit ? (
+                 <CardFront rank={card.rank} suit={card.suit} />
+               ) : (
+                 <CardBack />
+diff --git a/apps/web/src/components/home/HomeScreen.tsx b/apps/web/src/components/home/HomeScreen.tsx
+index af98a5c..c1823b7 100644
+--- a/apps/web/src/components/home/HomeScreen.tsx
++++ b/apps/web/src/components/home/HomeScreen.tsx
+@@ -5,7 +5,7 @@ import { Wordmark } from '../shared/Wordmark'
+ import { useState } from 'react'
+ 
+ type HomeScreenProps = {
+-  onCreateRoom: () => void
++  onCreateRoom: (deckKind: 'french' | 'italian') => void
+   onJoinRoom: (roomId: string) => void
+   isConnecting: boolean
+   roomError: string | null
+@@ -28,6 +28,7 @@ const controls = [
+ 
+ export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }: HomeScreenProps) {
+   const [roomCode, setRoomCode] = useState('')
++  const [deckKind, setDeckKind] = useState<'french' | 'italian'>('french')
+ 
+   return (
+     <main className="min-h-dvh bg-night p-3 md:p-5">
+@@ -47,9 +48,15 @@ export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }
+               the game you already know, or make one up as you go.
+             </p>
+ 
++            <fieldset className="mt-6 flex flex-wrap gap-3 text-sm text-ivory/85">
++              <legend className="mb-2 text-xs uppercase tracking-wider text-ivory/60">Choose a deck</legend>
++              <label className="flex items-center gap-2"><input type="radio" name="deckKind" value="french" checked={deckKind === 'french'} onChange={() => setDeckKind('french')} /> French · 52 cards</label>
++              <label className="flex items-center gap-2"><input type="radio" name="deckKind" value="italian" checked={deckKind === 'italian'} onChange={() => setDeckKind('italian')} /> Italian · 40 cards</label>
++            </fieldset>
++
+             <button
+               type="button"
+-              onClick={onCreateRoom}
++              onClick={() => onCreateRoom(deckKind)}
+               disabled={isConnecting}
+               className="group mt-9 inline-flex h-12 items-center gap-3 rounded-md bg-ivory pr-5 pl-6 font-semibold text-ink shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)] transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gold"
+             >
+diff --git a/apps/web/src/components/pile/PileView.tsx b/apps/web/src/components/pile/PileView.tsx
+index 470421a..8b8c50a 100644
+--- a/apps/web/src/components/pile/PileView.tsx
++++ b/apps/web/src/components/pile/PileView.tsx
+@@ -76,7 +76,7 @@ export function PileView({
+       })}
+ 
+       <div className="absolute inset-0 transition-transform duration-150 ease-out group-hover:-translate-y-1">
+-        {topCard.faceUp ? (
++        {topCard.faceUp && topCard.rank && topCard.suit ? (
+           <CardFront rank={topCard.rank} suit={topCard.suit} />
+         ) : (
+           <CardBack />
+diff --git a/apps/web/src/components/table/TableSurface.tsx b/apps/web/src/components/table/TableSurface.tsx
+index d33652e..fb9f3fe 100644
+--- a/apps/web/src/components/table/TableSurface.tsx
++++ b/apps/web/src/components/table/TableSurface.tsx
+@@ -28,11 +28,6 @@ type TableAction = 'move-deck' | 'shuffle' | 'create-pile' | 'flip-selected' | '
+ 
+ const CARD_WIDTH = 112
+ 
+-const initialDeckPosition: NormalizedPosition = {
+-  x: 0.12,
+-  y: 0.46,
+-}
+-
+ function clamp(value: number, min: number, max: number) {
+   return Math.min(max, Math.max(min, value))
+ }
+@@ -54,19 +49,22 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+   const [notice, setNotice] = useState<{ id: number, text: string } | null>(null)
+   const [actionMenuOpen, setActionMenuOpen] = useState(false)
+   const [confirmingReset, setConfirmingReset] = useState(false)
+-  const [deckPosition, setDeckPosition] = useState<NormalizedPosition>(initialDeckPosition)
+   const [isMovingDeck, setIsMovingDeck] = useState(false)
+ 
+   const deckX = useMotionValue(0)
+   const deckY = useMotionValue(0)
+ 
+   const {
+-    deck,
++    deckCount,
++    deckPosition,
+     looseCards,
+     selectedCardIds,
+     piles,
+     hands,
+     zones,
++    drawCard,
++    flipSelectedCards,
++    moveDeck,
+     drawCardToHand,
+     playCardFromHand,
+     moveLooseCardToHand,
+@@ -90,7 +88,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+     shuffleDeck,
+     resetGame,
+     replaceGameState,
+-  } = useTableGame(initialTableState)
++  } = useTableGame(initialTableState, notify)
+ 
+   const playerHand = hands.find((hand) => hand.playerId === currentPlayerId)
+   const discardZone = zones.find((zone) => zone.id === 'discard-zone')
+@@ -177,12 +175,11 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+           return
+         }
+ 
+-        selectedCardIds.forEach((cardId) => flipCard(cardId))
++        flipSelectedCards()
+         notify(selectedCardIds.length === 1 ? 'Card flipped' : `${selectedCardIds.length} cards flipped`)
+         return
+       case 'reset':
+         resetGame()
+-        setDeckPosition(initialDeckPosition)
+         setIsMovingDeck(false)
+         notify('Fresh deck, empty table')
+         return
+@@ -240,27 +237,24 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+     const step = tableSize.width > 0 ? (CARD_WIDTH + 48) / tableSize.width : 0.12
+     const direction = deckPosition.x > 0.6 ? -1 : 1
+ 
+-    return { x: deckPosition.x + direction * step, y: deckPosition.y }
++    return { x: clamp(deckPosition.x + direction * step, 0, 1), y: deckPosition.y }
+   }
+ 
+   function handleDrawToTable() {
+-    socket.emit('table:draw', {
+-      landingPosition: getDrawLanding(),
+-      spawnFrom: deckPosition,
+-    })
++    drawCard(getDrawLanding(), deckPosition)
+   }
+ 
+   function handleDrawToHand() {
+     if (!playerHand) return
+ 
+-    drawCardToHand(playerHand.id)
++    drawCardToHand()
+   }
+ 
+   function handleDeckDragEnd() {
+     const { width, height } = tableSize
+ 
+     if (width > 0 && height > 0) {
+-      setDeckPosition({
++      moveDeck({
+         x: clamp(deckPosition.x + deckX.get() / width, 0.06, 0.94),
+         y: clamp(deckPosition.y + deckY.get() / height, 0.14, 0.8),
+       })
+@@ -375,7 +369,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+           }}
+         >
+           <DeckPile
+-            cardsRemaining={deck.length}
++            cardsRemaining={deckCount}
+             isMoving={isMovingDeck}
+             onDraw={handleDrawToTable}
+             onDrawToHand={handleDrawToHand}
+@@ -451,7 +445,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+ 
+                 if (isPartOfMultiSelection) {
+                   if (playerHand && isPositionInside(handRef.current, position)) {
+-                    moveSelectedCardsToHand(playerHand.id)
++                    moveSelectedCardsToHand()
+                     return
+                   }
+ 
+@@ -465,7 +459,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+                 }
+ 
+                 if (playerHand && isPositionInside(handRef.current, position)) {
+-                  moveLooseCardToHand(card.id, playerHand.id)
++                  moveLooseCardToHand(card.id)
+                   return
+                 }
+ 
+@@ -491,7 +485,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
+           ref={handRef}
+           className="absolute -bottom-8 left-1/2 z-30 w-[min(70rem,86vw)] -translate-x-1/2"
+         >
+-          {hands.map((hand) => (
++          {hands.filter((hand) => hand.playerId === currentPlayerId).map((hand) => (
+             <HandView
+               key={hand.id}
+               hand={hand}
+diff --git a/apps/web/src/components/zone/ZoneView.tsx b/apps/web/src/components/zone/ZoneView.tsx
+index 630a63d..b0afb24 100644
+--- a/apps/web/src/components/zone/ZoneView.tsx
++++ b/apps/web/src/components/zone/ZoneView.tsx
+@@ -37,7 +37,7 @@ export function ZoneView({
+           })}
+ 
+           <div className="absolute inset-0 transition-transform duration-150 ease-out group-hover:-translate-y-1">
+-            {topCard.faceUp ? (
++            {topCard.faceUp && topCard.rank && topCard.suit ? (
+               <CardFront rank={topCard.rank} suit={topCard.suit} />
+             ) : (
+               <CardBack />
+diff --git a/apps/web/src/hooks/useTableGame.ts b/apps/web/src/hooks/useTableGame.ts
+index f9e9855..ef2b737 100644
+--- a/apps/web/src/hooks/useTableGame.ts
++++ b/apps/web/src/hooks/useTableGame.ts
+@@ -1,1177 +1,110 @@
+ import { useRef, useState } from 'react'
+-import { initialDeck } from '../data/initialTable'
+-import type { LooseCard, TableCard } from '../types/card'
++import { socket } from '../multiplayer/socket'
+ import type { TableGameState } from '../types/game'
+-import type { Pile } from '../types/pile'
+ import type { NormalizedPosition } from '../types/position'
+-import { shuffle } from '../utils/shuffle'
+ 
+-function createInitialGameState(): TableGameState {
+-    return {
+-        deck: shuffle(initialDeck),
+-        looseCards: [],
+-        piles: [],
+-        hands: [
+-            {
+-                id: 'player-1-hand',
+-                playerId: 'player-1',
+-                cards: [],
+-            },
+-        ],
+-        zones: [
+-            {
+-                id: 'discard-zone',
+-                label: 'Discard',
+-                type: 'discard',
+-                cards: [],
+-            },
+-        ],
+-    }
++// The server owns all cards. This hook only keeps a VIEW of the state and
++// local-only UI selection/drag previews. No card may be created here.
++type Action = { type: string; [key: string]: unknown }
++const clamp = (value: number) => Math.max(0, Math.min(1, value))
++
++export function useTableGame(initial: TableGameState, onError: (message: string) => void) {
++  const [game, setGame] = useState(initial)
++  const [selectedCardIds, setSelectedCardIds] = useState<string[]>([])
++  const [dragOffset, setDragOffset] = useState<NormalizedPosition>({ x: 0, y: 0 })
++  const offsetRef = useRef<NormalizedPosition>({ x: 0, y: 0 })
++  const draggedRef = useRef<string | null>(null)
++
++  const request = (action: Action) => {
++    socket.timeout(5000).emit('table:action', action, (error: Error | null, response?: { ok: boolean; error?: string }) => {
++      if (error) onError('Server did not respond. Check your connection.')
++      else if (!response?.ok) onError(response?.error ?? 'Action rejected by server.')
++    })
++  }
++
++  const replaceGameState = (next: TableGameState) => {
++    setGame((current) => next.version >= current.version ? next : current)
++    setSelectedCardIds((current) => {
++      const existing = new Set(next.looseCards.map((card) => card.id))
++      return current.filter((id) => existing.has(id))
++    })
++    offsetRef.current = { x: 0, y: 0 }
++    draggedRef.current = null
++    setDragOffset({ x: 0, y: 0 })
++  }
++
++  const selectCard = (id: string, additive = false) => setSelectedCardIds((current) => additive
++    ? current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
++    : current.includes(id) ? current : [id])
++  const selectOnlyCard = (id: string) => setSelectedCardIds((current) => current.length === 1 && current[0] === id ? current : [id])
++  const clearSelection = () => setSelectedCardIds([])
++
++  const moveSelectedCards = (draggedCardId: string, delta: NormalizedPosition) => {
++    if (selectedCardIds.length < 2 || !selectedCardIds.includes(draggedCardId)) return
++    draggedRef.current = draggedCardId
++    offsetRef.current = { x: offsetRef.current.x + delta.x, y: offsetRef.current.y + delta.y }
++    setDragOffset(offsetRef.current)
++  }
++
++  const commitMovement = (draggedId: string, position: NormalizedPosition, selected: boolean) => {
++    const moving = selected && selectedCardIds.includes(draggedId)
++      ? game.looseCards.filter((card) => selectedCardIds.includes(card.id))
++      : game.looseCards.filter((card) => card.id === draggedId)
++    if (!moving.length) return
++
++    const moves = moving.map((card) => ({
++      id: card.id,
++      position: card.id === draggedId ? position : {
++        x: clamp(card.position.x + offsetRef.current.x),
++        y: clamp(card.position.y + offsetRef.current.y),
++      },
++    }))
++    const pile = game.piles.find((pile) => Math.abs(pile.position.x - position.x) <= 0.08 && Math.abs(pile.position.y - position.y) <= 0.08)
++    if (pile) request({ type: 'move-cards', pileId: pile.id, moves: moves.map((move) => ({ ...move, position: pile.position })) })
++    else request({ type: 'move-cards', moves })
++    offsetRef.current = { x: 0, y: 0 }
++    draggedRef.current = null
++    setDragOffset({ x: 0, y: 0 })
++  }
++
++  const tableToHand = (ids: string[]) => { request({ type: 'table-to-hand', cardIds: ids }); clearSelection() }
++  const tableToZone = (ids: string[], zoneId: string) => { request({ type: 'table-to-zone', cardIds: ids, zoneId }); clearSelection() }
++
++  return {
++    deckCount: game.deckCount,
++    deckPosition: game.deckPosition,
++    looseCards: game.looseCards.map((card) => selectedCardIds.includes(card.id) && card.id !== draggedRef.current && (dragOffset.x !== 0 || dragOffset.y !== 0)
++      ? { ...card, position: { x: clamp(card.position.x + dragOffset.x), y: clamp(card.position.y + dragOffset.y) } }
++      : card),
++    piles: game.piles,
++    hands: game.hands,
++    zones: game.zones,
++    selectedCardIds,
++    replaceGameState,
++    selectCard,
++    selectOnlyCard,
++    clearSelection,
++    moveSelectedCards,
++    moveLooseCardOrAddToPile: (id: string, pos: NormalizedPosition) => commitMovement(id, pos, false),
++    moveSelectedCardsOrAddToPile: (id: string, pos: NormalizedPosition) => commitMovement(id, pos, true),
++    drawCard: (landingPosition: NormalizedPosition, spawnFrom?: NormalizedPosition) => request({ type: 'draw-table', landingPosition, spawnFrom }),
++    drawCardToHand: () => request({ type: 'draw-hand' }),
++    bringLooseCardToFront: (cardId: string) => request({ type: 'front-card', cardId }),
++    flipCard: (cardId: string) => request({ type: 'flip-cards', cardIds: [cardId] }),
++    flipSelectedCards: () => request({ type: 'flip-cards', cardIds: selectedCardIds }),
++    createPileFromSelection: () => { if (selectedCardIds.length >= 2) request({ type: 'create-pile', cardIds: selectedCardIds }); clearSelection() },
++    updatePilePosition: (pileId: string, position: NormalizedPosition) => request({ type: 'move-pile', pileId, position }),
++    bringPileToFront: (pileId: string) => request({ type: 'front-pile', pileId }),
++    extractTopCardFromPile: (pileId: string) => request({ type: 'extract-pile', pileId }),
++    moveLooseCardToHand: (cardId: string) => tableToHand([cardId]),
++    moveSelectedCardsToHand: () => tableToHand(selectedCardIds),
++    playCardFromHand: (_handId: string, cardId: string, position: NormalizedPosition) => request({ type: 'hand-to-table', cardId, position }),
++    moveLooseCardToZone: (cardId: string, zoneId: string) => tableToZone([cardId], zoneId),
++    moveSelectedCardsToZone: (zoneId: string) => tableToZone(selectedCardIds, zoneId),
++    moveCardFromHandToZone: (_handId: string, cardId: string, zoneId: string) => request({ type: 'hand-to-zone', cardId, zoneId }),
++    extractTopCardFromZone: (zoneId: string, position: NormalizedPosition) => request({ type: 'extract-zone', zoneId, position }),
++    shuffleDeck: () => request({ type: 'shuffle' }),
++    resetGame: () => { request({ type: 'reset' }); clearSelection() },
++    moveDeck: (position: NormalizedPosition) => request({ type: 'move-deck', position }),
++  }
+ }
+-
+-export function useTableGame(initialState?: TableGameState,) {
+-    const [game, setGame] = useState<TableGameState>(() => initialState ?? createInitialGameState())
+-    const [selectedCardIds, setSelectedCardIds] = useState<string[]>([])
+-
+-    const {
+-        deck,
+-        looseCards,
+-        piles,
+-        hands,
+-        zones,
+-    } = game
+-
+-    const zIndexCounter = useRef(0)
+-
+-    function replaceGameState(
+-        nextGame: TableGameState,
+-    ) {
+-        setGame(nextGame)
+-        setSelectedCardIds([])
+-
+-        const highestZIndex = Math.max(
+-            0,
+-            ...nextGame.looseCards.map(
+-                (card) => card.zIndex,
+-            ),
+-            ...nextGame.piles.map(
+-                (pile) => pile.zIndex,
+-            ),
+-        )
+-
+-        zIndexCounter.current = highestZIndex
+-    }
+-
+-    function getNextZIndex() {
+-        zIndexCounter.current += 1
+-        return zIndexCounter.current
+-    }
+-
+-    const selectCard = (cardId: string, additive = false) => {
+-        setSelectedCardIds((currentIds) => {
+-            if (!additive) {
+-                if (currentIds.includes(cardId)) {
+-                    return currentIds
+-                }
+-
+-                return [cardId]
+-            }
+-
+-            if (currentIds.includes(cardId)) {
+-                return currentIds.filter((id) => id !== cardId)
+-            }
+-
+-            return [...currentIds, cardId]
+-        })
+-    }
+-
+-    const clearSelection = () => {
+-        setSelectedCardIds([])
+-    }
+-
+-    const selectOnlyCard = (cardId: string) => {
+-        setSelectedCardIds((currentIds) =>
+-            currentIds.length === 1 && currentIds[0] === cardId
+-                ? currentIds
+-                : [cardId]
+-        )
+-    }
+-
+-    function updateLooseCardPosition(
+-        cardId: string,
+-        position: NormalizedPosition
+-    ) {
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-            looseCards: currentGame.looseCards.map((card) =>
+-                card.id === cardId
+-                    ? { ...card, position }
+-                    : card
+-            ),
+-        }))
+-    }
+-
+-    function moveLooseCardOrAddToPile(
+-        cardId: string,
+-        position: NormalizedPosition
+-    ) {
+-        const card = looseCards.find(
+-            (currentCard) => currentCard.id === cardId
+-        )
+-
+-        if (!card) return
+-
+-        const dropThreshold = 0.08
+-
+-        const targetPile = piles.find((pile) => {
+-            const deltaX = Math.abs(position.x - pile.position.x)
+-            const deltaY = Math.abs(position.y - pile.position.y)
+-
+-            return deltaX <= dropThreshold && deltaY <= dropThreshold
+-        })
+-
+-        if (!targetPile) {
+-            updateLooseCardPosition(cardId, position)
+-            return
+-        }
+-
+-        const nextZIndex = getNextZIndex()
+-        const cardInsidePile = toTableCard(card)
+-
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-
+-            piles: currentGame.piles.map((pile) =>
+-                pile.id === targetPile.id
+-                    ? {
+-                        ...pile,
+-                        cards: [
+-                            ...pile.cards,
+-                            cardInsidePile,
+-                        ],
+-                        zIndex: nextZIndex,
+-                    }
+-                    : pile
+-            ),
+-
+-            looseCards: currentGame.looseCards.filter(
+-                (currentCard) =>
+-                    currentCard.id !== cardId
+-            ),
+-        }))
+-
+-        setSelectedCardIds((currentIds) =>
+-            currentIds.filter(
+-                (currentId) => currentId !== cardId
+-            )
+-        )
+-    }
+-
+-    function moveSelectedCardsOrAddToPile(
+-        draggedCardId: string,
+-        position: NormalizedPosition
+-    ) {
+-        const selectedCards = looseCards
+-            .filter((card) =>
+-                selectedCardIds.includes(card.id)
+-            )
+-            .sort((a, b) => a.zIndex - b.zIndex)
+-
+-        if (selectedCards.length < 2) {
+-            moveLooseCardOrAddToPile(
+-                draggedCardId,
+-                position
+-            )
+-
+-            return
+-        }
+-
+-        const dropThreshold = 0.08
+-
+-        const targetPile = piles.find((pile) => {
+-            const deltaX = Math.abs(
+-                position.x - pile.position.x
+-            )
+-
+-            const deltaY = Math.abs(
+-                position.y - pile.position.y
+-            )
+-
+-            return (
+-                deltaX <= dropThreshold &&
+-                deltaY <= dropThreshold
+-            )
+-        })
+-
+-        if (!targetPile) {
+-            // Le altre carte selezionate hanno già seguito il drag.
+-            // Qui confermiamo la posizione della carta trascinata.
+-            updateLooseCardPosition(
+-                draggedCardId,
+-                position
+-            )
+-
+-            return
+-        }
+-
+-        const cardsInsidePile =
+-            selectedCards.map(toTableCard)
+-
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-
+-            piles: currentGame.piles.map((pile) =>
+-                pile.id === targetPile.id
+-                    ? {
+-                        ...pile,
+-                        cards: [
+-                            ...pile.cards,
+-                            ...cardsInsidePile,
+-                        ],
+-                    }
+-                    : pile
+-            ),
+-
+-            looseCards:
+-                currentGame.looseCards.filter(
+-                    (card) =>
+-                        !selectedCardIds.includes(card.id)
+-                ),
+-        }))
+-
+-        setSelectedCardIds([])
+-    }
+-
+-    function bringLooseCardToFront(cardId: string) {
+-        const nextZIndex = getNextZIndex()
+-
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-
+-            looseCards: currentGame.looseCards.map(
+-                (card) =>
+-                    card.id === cardId
+-                        ? {
+-                            ...card,
+-                            zIndex: nextZIndex,
+-                        }
+-                        : card
+-            ),
+-        }))
+-    }
+-
+-    function resetGame() {
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-
+-            deck: shuffle(initialDeck),
+-
+-            looseCards: [],
+-
+-            piles: [],
+-
+-            hands: currentGame.hands.map((hand) => ({
+-                ...hand,
+-                cards: [],
+-            })),
+-
+-            zones: currentGame.zones.map((zone) => ({
+-                ...zone,
+-                cards: [],
+-            })),
+-        }))
+-
+-        setSelectedCardIds([])
+-
+-        zIndexCounter.current = 0
+-    }
+-
+-    function drawCard(
+-        landingPosition: NormalizedPosition,
+-        spawnFrom?: NormalizedPosition
+-    ) {
+-        if (deck.length === 0) return
+-
+-        const nextZIndex = getNextZIndex()
+-
+-        setGame((currentGame) => {
+-            const [drawnCard, ...remainingDeck] =
+-                currentGame.deck
+-
+-            if (!drawnCard) {
+-                return currentGame
+-            }
+-
+-            const offset =
+-                (currentGame.looseCards.length % 3) *
+-                0.02
+-
+-            const cardWithOffset: LooseCard = {
+-                ...drawnCard,
+-
+-                position: {
+-                    x: Math.min(
+-                        0.96,
+-                        Math.max(
+-                            0.04,
+-                            landingPosition.x + offset
+-                        )
+-                    ),
+-
+-                    y: Math.min(
+-                        0.92,
+-                        Math.max(
+-                            0.08,
+-                            landingPosition.y + offset
+-                        )
+-                    ),
+-                },
+-
+-                spawnFrom,
+-                zIndex: nextZIndex,
+-                faceUp: true,
+-            }
+-
+-            return {
+-                ...currentGame,
+-
+-                deck: remainingDeck,
+-
+-                looseCards: [
+-                    ...currentGame.looseCards,
+-                    cardWithOffset,
+-                ],
+-            }
+-        })
+-    }
+-
+-    function drawCardToHand(handId: string) {
+-        const handExists = hands.some(
+-            (hand) => hand.id === handId
+-        )
+-
+-        if (!handExists || deck.length === 0) {
+-            return
+-        }
+-
+-        setGame((currentGame) => {
+-            const [drawnCard, ...remainingDeck] =
+-                currentGame.deck
+-
+-            if (!drawnCard) {
+-                return currentGame
+-            }
+-
+-            const currentHandExists =
+-                currentGame.hands.some(
+-                    (hand) => hand.id === handId
+-                )
+-
+-            if (!currentHandExists) {
+-                return currentGame
+-            }
+-
+-            const cardForHand: TableCard = {
+-                ...drawnCard,
+-                faceUp: true,
+-            }
+-
+-            return {
+-                ...currentGame,
+-
+-                deck: remainingDeck,
+-
+-                hands: currentGame.hands.map(
+-                    (hand) =>
+-                        hand.id === handId
+-                            ? {
+-                                ...hand,
+-
+-                                cards: [
+-                                    ...hand.cards,
+-                                    cardForHand,
+-                                ],
+-                            }
+-                            : hand
+-                ),
+-            }
+-        })
+-    }
+-
+-    function shuffleDeck() {
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-            deck: shuffle(currentGame.deck),
+-        }))
+-    }
+-
+-    const flipCard = (cardId: string) => {
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-
+-            looseCards:
+-                currentGame.looseCards.map((card) =>
+-                    card.id === cardId
+-                        ? {
+-                            ...card,
+-                            faceUp: !card.faceUp,
+-                        }
+-                        : card
+-                ),
+-        }))
+-    }
+-
+-    function moveSelectedCards(
+-        draggedCardId: string,
+-        delta: NormalizedPosition
+-    ) {
+-        if (
+-            !selectedCardIds.includes(draggedCardId)
+-        ) {
+-            return
+-        }
+-
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-
+-            looseCards:
+-                currentGame.looseCards.map((card) => {
+-                    if (
+-                        card.id === draggedCardId ||
+-                        !selectedCardIds.includes(
+-                            card.id
+-                        )
+-                    ) {
+-                        return card
+-                    }
+-
+-                    return {
+-                        ...card,
+-
+-                        position: {
+-                            x: Math.min(
+-                                1,
+-                                Math.max(
+-                                    0,
+-                                    card.position.x +
+-                                    delta.x
+-                                )
+-                            ),
+-
+-                            y: Math.min(
+-                                1,
+-                                Math.max(
+-                                    0,
+-                                    card.position.y +
+-                                    delta.y
+-                                )
+-                            ),
+-                        },
+-                    }
+-                }),
+-        }))
+-    }
+-
+-    const createPileFromSelection = () => {
+-        if (selectedCardIds.length < 2) {
+-            return
+-        }
+-
+-        const selectedCards = looseCards
+-            .filter((card) =>
+-                selectedCardIds.includes(card.id)
+-            )
+-            .sort((a, b) => a.zIndex - b.zIndex)
+-
+-        if (selectedCards.length < 2) {
+-            return
+-        }
+-
+-        const topCard = selectedCards.reduce(
+-            (highest, card) =>
+-                card.zIndex > highest.zIndex
+-                    ? card
+-                    : highest
+-        )
+-
+-        const newPile: Pile = {
+-            id: crypto.randomUUID(),
+-
+-            cards:
+-                selectedCards.map(toTableCard),
+-
+-            position: topCard.position,
+-
+-            zIndex: getNextZIndex(),
+-        }
+-
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-
+-            piles: [
+-                ...currentGame.piles,
+-                newPile,
+-            ],
+-
+-            looseCards:
+-                currentGame.looseCards.filter(
+-                    (card) =>
+-                        !selectedCardIds.includes(
+-                            card.id
+-                        )
+-                ),
+-        }))
+-
+-        setSelectedCardIds([])
+-    }
+-
+-    function updatePilePosition(
+-        pileId: string,
+-        position: NormalizedPosition
+-    ) {
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-
+-            piles: currentGame.piles.map((pile) =>
+-                pile.id === pileId
+-                    ? {
+-                        ...pile,
+-                        position,
+-                    }
+-                    : pile
+-            ),
+-        }))
+-    }
+-
+-    function bringPileToFront(pileId: string) {
+-        const nextZIndex = getNextZIndex()
+-
+-        setGame((currentGame) => ({
+-            ...currentGame,
+-
+-            piles: currentGame.piles.map((pile) =>
+-                pile.id === pileId
+-                    ? {
+-                        ...pile,
+-                        zIndex: nextZIndex,
+-                    }
+-                    : pile
+-            ),
+-        }))
+-    }
+-
+-    function extractTopCardFromPile(
+-        pileId: string
+-    ) {
+-        const pile = piles.find(
+-            (currentPile) =>
+-                currentPile.id === pileId
+-        )
+-
+-        if (
+-            !pile ||
+-            pile.cards.length === 0
+-        ) {
+-            return
+-        }
+-
+-        const nextZIndex = getNextZIndex()
+-
+-        setGame((currentGame) => {
+-            const currentPile =
+-                currentGame.piles.find(
+-                    (pile) =>
+-                        pile.id === pileId
+-                )
+-
+-            if (
+-                !currentPile ||
+-                currentPile.cards.length === 0
+-            ) {
+-                return currentGame
+-            }
+-
+-            const topCard =
+-                currentPile.cards[
+-                currentPile.cards.length - 1
+-                ]
+-
+-            const remainingCards =
+-                currentPile.cards.slice(0, -1)
+-
+-            const extractedCard: LooseCard = {
+-                ...topCard,
+-
+-                position: {
+-                    x: Math.min(
+-                        0.96,
+-                        currentPile.position.x + 0.06
+-                    ),
+-
+-                    y: Math.min(
+-                        0.92,
+-                        currentPile.position.y + 0.04
+-                    ),
+-                },
+-
+-                spawnFrom: currentPile.position,
+-
+-                zIndex: nextZIndex,
+-            }
+-
+-            return {
+-                ...currentGame,
+-
+-                looseCards: [
+-                    ...currentGame.looseCards,
+-                    extractedCard,
+-                ],
+-
+-                piles: currentGame.piles
+-                    .map((pile) =>
+-                        pile.id === pileId
+-                            ? {
+-                                ...pile,
+-                                cards:
+-                                    remainingCards,
+-                            }
+-                            : pile
+-                    )
+-                    .filter(
+-                        (pile) =>
+-                            pile.cards.length > 0
+-                    ),
+-            }
+-        })
+-    }
+-
+-    function toTableCard(
+-        card: LooseCard
+-    ): TableCard {
+-        return {
+-            id: card.id,
+-            rank: card.rank,
+-            suit: card.suit,
+-            faceUp: card.faceUp,
+-        }
+-    }
+-
+-    function playCardFromHand(
+-        handId: string,
+-        cardId: string,
+-        position: NormalizedPosition
+-    ) {
+-        const hand = hands.find(
+-            (currentHand) =>
+-                currentHand.id === handId
+-        )
+-
+-        if (!hand) return
+-
+-        const card = hand.cards.find(
+-            (currentCard) =>
+-                currentCard.id === cardId
+-        )
+-
+-        if (!card) return
+-
+-        const nextZIndex = getNextZIndex()
+-
+-        setGame((currentGame) => {
+-            const currentHand =
+-                currentGame.hands.find(
+-                    (hand) =>
+-                        hand.id === handId
+-                )
+-
+-            const currentCard =
+-                currentHand?.cards.find(
+-                    (handCard) =>
+-                        handCard.id === cardId
+-                )
+-
+-            if (!currentCard) {
+-                return currentGame
+-            }
+-
+-            const looseCard: LooseCard = {
+-                ...currentCard,
+-                position,
+-                zIndex: nextZIndex,
+-            }
+-
+-            return {
+-                ...currentGame,
+-
+-                hands: currentGame.hands.map(
+-                    (hand) =>
+-                        hand.id === handId
+-                            ? {
+-                                ...hand,
+-
+-                                cards:
+-                                    hand.cards.filter(
+-                                        (handCard) =>
+-                                            handCard.id !==
+-                                            cardId
+-                                    ),
+-                            }
+-                            : hand
+-                ),
+-
+-                looseCards: [
+-                    ...currentGame.looseCards,
+-                    looseCard,
+-                ],
+-            }
+-        })
+-    }
+-
+-    function moveLooseCardToHand(
+-        cardId: string,
+-        handId: string
+-    ) {
+-        const card = looseCards.find(
+-            (currentCard) =>
+-                currentCard.id === cardId
+-        )
+-
+-        const handExists = hands.some(
+-            (hand) =>
+-                hand.id === handId
+-        )
+-
+-        if (!card || !handExists) {
+-            return
+-        }
+-
+-        setGame((currentGame) => {
+-            const currentCard =
+-                currentGame.looseCards.find(
+-                    (looseCard) =>
+-                        looseCard.id === cardId
+-                )
+-
+-            const currentHandExists =
+-                currentGame.hands.some(
+-                    (hand) =>
+-                        hand.id === handId
+-                )
+-
+-            if (
+-                !currentCard ||
+-                !currentHandExists
+-            ) {
+-                return currentGame
+-            }
+-
+-            const cardForHand =
+-                toTableCard(currentCard)
+-
+-            return {
+-                ...currentGame,
+-
+-                hands: currentGame.hands.map(
+-                    (hand) =>
+-                        hand.id === handId
+-                            ? {
+-                                ...hand,
+-
+-                                cards: [
+-                                    ...hand.cards,
+-                                    cardForHand,
+-                                ],
+-                            }
+-                            : hand
+-                ),
+-
+-                looseCards:
+-                    currentGame.looseCards.filter(
+-                        (looseCard) =>
+-                            looseCard.id !== cardId
+-                    ),
+-            }
+-        })
+-
+-        setSelectedCardIds((currentIds) =>
+-            currentIds.filter(
+-                (currentId) =>
+-                    currentId !== cardId
+-            )
+-        )
+-    }
+-
+-    function moveSelectedCardsToZone(zoneId: string) {
+-        if (selectedCardIds.length < 2) {
+-            return
+-        }
+-
+-        setGame((currentGame) => {
+-            const zoneExists = currentGame.zones.some(
+-                (zone) => zone.id === zoneId
+-            )
+-
+-            if (!zoneExists) {
+-                return currentGame
+-            }
+-
+-            const selectedCards = currentGame.looseCards
+-                .filter((card) =>
+-                    selectedCardIds.includes(card.id)
+-                )
+-                .sort((a, b) => a.zIndex - b.zIndex)
+-
+-            if (selectedCards.length < 2) {
+-                return currentGame
+-            }
+-
+-            const selectedIds = new Set(
+-                selectedCards.map((card) => card.id)
+-            )
+-
+-            return {
+-                ...currentGame,
+-
+-                zones: currentGame.zones.map((zone) =>
+-                    zone.id === zoneId
+-                        ? {
+-                            ...zone,
+-                            cards: [
+-                                ...zone.cards,
+-                                ...selectedCards.map(toTableCard),
+-                            ],
+-                        }
+-                        : zone
+-                ),
+-
+-                looseCards: currentGame.looseCards.filter(
+-                    (card) => !selectedIds.has(card.id)
+-                ),
+-            }
+-        })
+-
+-        setSelectedCardIds([])
+-    }
+-
+-    function moveSelectedCardsToHand(handId: string) {
+-        if (selectedCardIds.length < 2) {
+-            return
+-        }
+-
+-        setGame((currentGame) => {
+-            const handExists = currentGame.hands.some(
+-                (hand) => hand.id === handId
+-            )
+-
+-            if (!handExists) {
+-                return currentGame
+-            }
+-
+-            const selectedCards = currentGame.looseCards
+-                .filter((card) =>
+-                    selectedCardIds.includes(card.id)
+-                )
+-                .sort((a, b) => a.zIndex - b.zIndex)
+-
+-            if (selectedCards.length < 2) {
+-                return currentGame
+-            }
+-
+-            const selectedIds = new Set(
+-                selectedCards.map((card) => card.id)
+-            )
+-
+-            return {
+-                ...currentGame,
+-
+-                hands: currentGame.hands.map((hand) =>
+-                    hand.id === handId
+-                        ? {
+-                            ...hand,
+-                            cards: [
+-                                ...hand.cards,
+-                                ...selectedCards.map(toTableCard),
+-                            ],
+-                        }
+-                        : hand
+-                ),
+-
+-                looseCards: currentGame.looseCards.filter(
+-                    (card) => !selectedIds.has(card.id)
+-                ),
+-            }
+-        })
+-
+-        setSelectedCardIds([])
+-    }
+-
+-    function moveLooseCardToZone(
+-        cardId: string,
+-        zoneId: string
+-    ) {
+-        const card = looseCards.find(
+-            (currentCard) =>
+-                currentCard.id === cardId
+-        )
+-
+-        const zoneExists = zones.some(
+-            (zone) =>
+-                zone.id === zoneId
+-        )
+-
+-        if (!card || !zoneExists) {
+-            return
+-        }
+-
+-        setGame((currentGame) => {
+-            const currentCard =
+-                currentGame.looseCards.find(
+-                    (looseCard) =>
+-                        looseCard.id === cardId
+-                )
+-
+-            const currentZoneExists =
+-                currentGame.zones.some(
+-                    (zone) =>
+-                        zone.id === zoneId
+-                )
+-
+-            if (
+-                !currentCard ||
+-                !currentZoneExists
+-            ) {
+-                return currentGame
+-            }
+-
+-            const cardForZone =
+-                toTableCard(currentCard)
+-
+-            return {
+-                ...currentGame,
+-
+-                zones: currentGame.zones.map(
+-                    (zone) =>
+-                        zone.id === zoneId
+-                            ? {
+-                                ...zone,
+-
+-                                cards: [
+-                                    ...zone.cards,
+-                                    cardForZone,
+-                                ],
+-                            }
+-                            : zone
+-                ),
+-
+-                looseCards:
+-                    currentGame.looseCards.filter(
+-                        (looseCard) =>
+-                            looseCard.id !== cardId
+-                    ),
+-            }
+-        })
+-
+-        setSelectedCardIds((currentIds) =>
+-            currentIds.filter(
+-                (currentId) =>
+-                    currentId !== cardId
+-            )
+-        )
+-    }
+-
+-    function moveCardFromHandToZone(
+-        handId: string,
+-        cardId: string,
+-        zoneId: string
+-    ) {
+-        const hand = hands.find(
+-            (currentHand) =>
+-                currentHand.id === handId
+-        )
+-
+-        const card = hand?.cards.find(
+-            (currentCard) =>
+-                currentCard.id === cardId
+-        )
+-
+-        const zoneExists = zones.some(
+-            (zone) =>
+-                zone.id === zoneId
+-        )
+-
+-        if (!card || !zoneExists) {
+-            return
+-        }
+-
+-        setGame((currentGame) => {
+-            const currentHand =
+-                currentGame.hands.find(
+-                    (currentHand) =>
+-                        currentHand.id === handId
+-                )
+-
+-            const currentCard =
+-                currentHand?.cards.find(
+-                    (handCard) =>
+-                        handCard.id === cardId
+-                )
+-
+-            const currentZoneExists =
+-                currentGame.zones.some(
+-                    (zone) =>
+-                        zone.id === zoneId
+-                )
+-
+-            if (
+-                !currentCard ||
+-                !currentZoneExists
+-            ) {
+-                return currentGame
+-            }
+-
+-            return {
+-                ...currentGame,
+-
+-                hands: currentGame.hands.map(
+-                    (currentHand) =>
+-                        currentHand.id === handId
+-                            ? {
+-                                ...currentHand,
+-
+-                                cards:
+-                                    currentHand.cards.filter(
+-                                        (handCard) =>
+-                                            handCard.id !==
+-                                            cardId
+-                                    ),
+-                            }
+-                            : currentHand
+-                ),
+-
+-                zones: currentGame.zones.map(
+-                    (zone) =>
+-                        zone.id === zoneId
+-                            ? {
+-                                ...zone,
+-
+-                                cards: [
+-                                    ...zone.cards,
+-                                    currentCard,
+-                                ],
+-                            }
+-                            : zone
+-                ),
+-            }
+-        })
+-    }
+-
+-    function extractTopCardFromZone(
+-        zoneId: string,
+-        position: NormalizedPosition
+-    ) {
+-        const zone = zones.find(
+-            (currentZone) =>
+-                currentZone.id === zoneId
+-        )
+-
+-        if (
+-            !zone ||
+-            zone.cards.length === 0
+-        ) {
+-            return
+-        }
+-
+-        const nextZIndex = getNextZIndex()
+-
+-        setGame((currentGame) => {
+-            const currentZone =
+-                currentGame.zones.find(
+-                    (zone) =>
+-                        zone.id === zoneId
+-                )
+-
+-            if (
+-                !currentZone ||
+-                currentZone.cards.length === 0
+-            ) {
+-                return currentGame
+-            }
+-
+-            const topCard =
+-                currentZone.cards[
+-                currentZone.cards.length - 1
+-                ]
+-
+-            const remainingCards =
+-                currentZone.cards.slice(0, -1)
+-
+-            const looseCard: LooseCard = {
+-                ...topCard,
+-                position,
+-                zIndex: nextZIndex,
+-            }
+-
+-            return {
+-                ...currentGame,
+-
+-                zones: currentGame.zones.map(
+-                    (zone) =>
+-                        zone.id === zoneId
+-                            ? {
+-                                ...zone,
+-                                cards:
+-                                    remainingCards,
+-                            }
+-                            : zone
+-                ),
+-
+-                looseCards: [
+-                    ...currentGame.looseCards,
+-                    looseCard,
+-                ],
+-            }
+-        })
+-    }
+-
+-    return {
+-        deck,
+-        looseCards,
+-        piles,
+-        selectedCardIds,
+-        hands,
+-        zones,
+-
+-        drawCard,
+-        shuffleDeck,
+-        resetGame,
+-        replaceGameState,
+-
+-        updateLooseCardPosition,
+-        bringLooseCardToFront,
+-        flipCard,
+-
+-        selectCard,
+-        selectOnlyCard,
+-        clearSelection,
+-
+-        moveSelectedCards,
+-        createPileFromSelection,
+-
+-        updatePilePosition,
+-        bringPileToFront,
+-        extractTopCardFromPile,
+-
+-        moveLooseCardOrAddToPile,
+-        moveSelectedCardsOrAddToPile,
+-
+-        drawCardToHand,
+-        playCardFromHand,
+-        moveLooseCardToHand,
+-
+-        moveLooseCardToZone,
+-        moveSelectedCardsToZone,
+-        moveCardFromHandToZone,
+-        extractTopCardFromZone,
+-        moveSelectedCardsToHand,
+-    }
+-}
+\ No newline at end of file
+diff --git a/apps/web/src/types/card.ts b/apps/web/src/types/card.ts
+index 3aa7f46..97cf5ad 100644
+--- a/apps/web/src/types/card.ts
++++ b/apps/web/src/types/card.ts
+@@ -14,8 +14,12 @@ export type Card = {
+   suit: Suit
+ }
+ 
+-export type TableCard = Card & {
++export type TableCard = {
++  id: string
+   faceUp: boolean
++  // Hidden cards are serialized without rank/suit. The id is an opaque UUID.
++  rank?: string
++  suit?: string
+ }
+ 
+ // position is the card's centre, normalised to the table size.
+diff --git a/apps/web/src/types/game.ts b/apps/web/src/types/game.ts
+index 8c12836..c9e12e7 100644
+--- a/apps/web/src/types/game.ts
++++ b/apps/web/src/types/game.ts
+@@ -1,12 +1,17 @@
+-import type { Card, LooseCard } from './card'
++import type { LooseCard } from './card'
+ import type { Pile } from './pile'
+ import type { Hand } from './hand'
+ import type { Zone } from './zone'
++import type { NormalizedPosition } from './position'
+ 
++// A view for ONE player, never the server's private game state.
+ export type TableGameState = {
+-  deck: Card[]
++  version: number
++  deckKind: 'french' | 'italian'
++  deckCount: number
++  deckPosition: NormalizedPosition
+   looseCards: LooseCard[]
+   piles: Pile[]
+-  hands: Hand[]
++  hands: Hand[] // only the current player's own hand
+   zones: Zone[]
+-}
+\ No newline at end of file
++}
+diff --git a/package.json b/package.json
+index a3b2baf..a9c3038 100644
+--- a/package.json
++++ b/package.json
+@@ -14,6 +14,8 @@
+     "build:web": "npm run build --workspace=apps/web",
+     "lint:web": "npm run lint --workspace=apps/web",
+     "dev:server": "npm run dev --workspace=apps/server",
+-    "build:server": "npm run build --workspace=apps/server"
++    "build:server": "npm run build --workspace=apps/server",
++    "test:server": "npm run build:server && node --test apps/server/test/*.test.mjs",
++    "typecheck:web": "tsc -p apps/web/tsconfig.app.json"
+   }
+ }
+\ No newline at end of file
