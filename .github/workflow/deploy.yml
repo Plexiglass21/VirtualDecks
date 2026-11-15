@@ -10,6 +10,6 @@ jobs:
     steps:
       - name: Aggiorna repository e ricostruisci container
         run: |
-          cd /home/plexy/virtual-decks
+          cd /home/plexy/server/virtual-decks
           git pull
           docker compose up -d --build
