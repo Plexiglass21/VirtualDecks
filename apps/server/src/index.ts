@@ -1,4 +1,6 @@
 import { createServer } from 'node:http'
+import { createReadStream, statSync } from 'node:fs'
+import { extname, join, resolve, sep } from 'node:path'
 import { randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import { Server } from 'socket.io'
 import { addPlayer, applyAction, newGame, removePlayer, viewFor, type DeckKind, type Game } from './game.js'
@@ -60,6 +62,23 @@ const ACTION_CACHE_LIMIT = 128
 const roomCodes = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const rooms = new Map<string, Room>()
 let shuttingDown = false
+
+const staticDir = process.env.STATIC_DIR ? resolve(process.env.STATIC_DIR) : null
+const mimeTypes: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.json': 'application/json; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+}
+
 const httpServer = createServer((req, res) => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
   if (req.method === 'GET' && req.url === '/health') {
@@ -82,6 +101,58 @@ const httpServer = createServer((req, res) => {
     res.end(JSON.stringify(telemetry.snapshot({ rooms: rooms.size, onlinePlayers, connections: quota.active })))
     return
   }
+
+  if (staticDir && (req.method === 'GET' || req.method === 'HEAD')) {
+    let rawPath: string
+    try {
+      rawPath = decodeURIComponent((req.url ?? '/').split('?')[0])
+    } catch {
+      res.writeHead(400)
+      res.end()
+      return
+    }
+    const relativePath = rawPath === '/' ? 'index.html' : rawPath.replace(/^\/+/, '')
+    const candidate = resolve(staticDir, relativePath)
+    if (candidate === staticDir || candidate.startsWith(staticDir + sep)) {
+      try {
+        const stat = statSync(candidate)
+        if (stat.isFile()) {
+          const ext = extname(candidate).toLowerCase()
+          res.writeHead(200, {
+            'Content-Type': mimeTypes[ext] ?? 'application/octet-stream',
+            'Content-Length': stat.size,
+            'Cache-Control': relativePath.startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
+            'X-Content-Type-Options': 'nosniff',
+          })
+          if (req.method === 'HEAD') { res.end(); return }
+          const stream = createReadStream(candidate)
+          stream.on('error', () => res.destroy())
+          stream.pipe(res)
+          return
+        }
+      } catch {
+        // File non trovato: passa al fallback SPA
+      }
+      if (!extname(relativePath)) {
+        try {
+          const indexFile = join(staticDir, 'index.html')
+          const stat = statSync(indexFile)
+          res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Content-Length': stat.size,
+            'Cache-Control': 'no-cache',
+            'X-Content-Type-Options': 'nosniff',
+          })
+          if (req.method === 'HEAD') { res.end(); return }
+          const stream = createReadStream(indexFile)
+          stream.on('error', () => res.destroy())
+          stream.pipe(res)
+          return
+        } catch { }
+      }
+    }
+  }
+
   res.writeHead(404)
   res.end()
 })
