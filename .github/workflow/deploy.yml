@@ -1,0 +1,15 @@
+name: Deploy Virtual Decks
+
+on:
+  push:
+    branches: [ "prod" ]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Aggiorna repository e ricostruisci container
+        run: |
+          cd /home/plexy/virtual-decks
+          git pull
+          docker compose up -d --build

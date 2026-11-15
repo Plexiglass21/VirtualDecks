@@ -1,0 +1,13 @@
+services:
+  virtual-decks:
+    build: .
+    container_name: virtual-decks
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - HOST=0.0.0.0
+      - PORT=3000
+      - CORS_ORIGINS=http://192.168.50.100:3000,http://localhost:3000
+      - STATIC_DIR=/app/apps/web/dist
