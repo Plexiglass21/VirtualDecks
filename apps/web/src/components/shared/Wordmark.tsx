@@ -28,7 +28,7 @@ export function Wordmark({ onClick }: WordmarkProps) {
       type="button"
       onClick={onClick}
       className="group flex items-center gap-2 rounded-md sm:gap-3 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gold"
-      aria-label="VirtualDecks, back to the home page"
+      aria-label="VirtualDecks"
     >
       {content}
     </button>

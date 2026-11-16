@@ -4,6 +4,7 @@ import { TableSurface } from './components/table/TableSurface'
 import { socket } from './multiplayer/socket'
 import type { Player } from './types/player'
 import type { TableGameState } from './types/game'
+import { inItalian } from './utils/italian'
 
 type AppScreen = 'home' | 'table'
 type RoomSession = {
@@ -17,6 +18,7 @@ type RoomResponse =
   | { ok: true; roomId: string; playerId: string; resumeToken: string; players: Player[]; table: TableGameState }
   | { ok: false; error: string }
 type LeaveResponse = { ok: true } | { ok: false; error: string }
+type DeleteResponse = { ok: true } | { ok: false; error: string }
 type ConnectionStatus = 'connected' | 'reconnecting' | 'resuming'
 
 const SESSION_KEY = 'virtualdecks:room-session:v1'
@@ -80,6 +82,10 @@ function App() {
   }
 
   useEffect(() => {
+    function handleRoomDeleted(message: string) {
+      finishRoomSession(inItalian(message))
+    }
+
     function handlePlayers(players: Player[]) {
       setRoomSession((current) => current ? { ...current, players } : null)
     }
@@ -104,7 +110,7 @@ function App() {
         resumeInFlight.current = null
         if (error || !response) {
           setConnectionStatus('reconnecting')
-          setConnectionIssue('Could not restore the session. Check your connection and reconnect.')
+          setConnectionIssue('Impossibile ripristinare la sessione. Controlla la connessione e riprova.')
           setIsConnecting(false)
           return
         }
@@ -113,7 +119,7 @@ function App() {
           setRoomSession(null)
           setIsConnecting(false)
           setConnectionIssue(null)
-          setRoomError(response.error)
+          setRoomError(inItalian(response.error))
           window.location.hash = ''
           setScreen('home')
           return
@@ -128,7 +134,7 @@ function App() {
       if (!getSavedSession()) return
       setConnectionStatus('reconnecting')
       setConnectionIssue(reason === 'io server disconnect'
-        ? 'This session was opened in another tab. Refresh this tab to take it back.'
+        ? 'Questa sessione è stata aperta in un’altra scheda. Ricarica per riprenderla.'
         : null)
     }
 
@@ -136,18 +142,26 @@ function App() {
       setIsConnecting(false)
       if (getSavedSession()) {
         setConnectionStatus('reconnecting')
-        setConnectionIssue(`Connection interrupted: ${error.message}`)
+        setConnectionIssue(`Connessione interrotta: ${error.message}`)
       } else {
         setRoomError(error.message)
       }
     }
 
     function handleHashChange() {
-      // Keep the table visible if its URL hash is temporarily changed.
+      // Browser Back must not silently strand an active room on the home page:
+      // the socket would still be in the room, making create/join impossible.
+      // Use the explicit Leave action to revoke the server-side seat.
+      if (getSavedSession() && window.location.hash !== '#table') {
+        window.location.hash = 'table'
+        setScreen('table')
+        return
+      }
       setScreen(window.location.hash === '#table' ? 'table' : 'home')
     }
 
     socket.on('room:players', handlePlayers)
+    socket.on('room:deleted', handleRoomDeleted)
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
     socket.on('connect_error', handleConnectError)
@@ -160,6 +174,7 @@ function App() {
 
     return () => {
       socket.off('room:players', handlePlayers)
+      socket.off('room:deleted', handleRoomDeleted)
       socket.off('connect', handleConnect)
       socket.off('disconnect', handleDisconnect)
       socket.off('connect_error', handleConnectError)
@@ -170,11 +185,11 @@ function App() {
   function handleRoomResponse(response: RoomResponse | undefined, error: Error | null) {
     setIsConnecting(false)
     if (error || !response) {
-      setRoomError('The server did not respond. Try again.')
+      setRoomError('Il server non risponde. Riprova.')
       return
     }
     if (response.ok === false) {
-      setRoomError(response.error)
+      setRoomError(inItalian(response.error))
       return
     }
     enterRoom(response)
@@ -200,27 +215,52 @@ function App() {
     })
   }
 
+  function finishRoomSession(message: string | null = null) {
+    saveSession(null)
+    resumeInFlight.current = null
+    boundSocketId.current = null
+    socket.disconnect()
+    setRoomSession(null)
+    setRoomError(message)
+    setConnectionIssue(null)
+    setIsConnecting(false)
+    window.location.hash = ''
+    setScreen('home')
+  }
+
   function openHome() {
-    if (!window.confirm('Leave this room permanently? Your hand will be returned to the deck.')) return
+    if (!window.confirm('Vuoi abbandonare definitivamente la stanza? Le carte della tua mano torneranno nel mazzo.')) return
     if (!socket.connected) {
-      setConnectionIssue('Reconnect to the server before leaving the room.')
+      if (window.confirm('Il server non è raggiungibile. Vuoi uscire solo su questo dispositivo? Il tuo posto potrebbe restare occupato fino alla scadenza.')) {
+        finishRoomSession('Hai lasciato il tavolo sul dispositivo. Il server libererà il posto alla scadenza.')
+      }
       return
     }
     socket.timeout(8000).emit('room:leave', (error: Error | null, response?: LeaveResponse) => {
       if (error || !response || response.ok === false) {
-        setConnectionIssue(response && response.ok === false ? response.error : 'Could not leave the room. Try again.')
+        setConnectionIssue(response && response.ok === false ? inItalian(response.error) : 'Impossibile abbandonare la stanza. Riprova.')
         return
       }
-      saveSession(null)
-      resumeInFlight.current = null
-      boundSocketId.current = null
-      socket.disconnect()
-      setRoomSession(null)
-      setRoomError(null)
-      setConnectionIssue(null)
-      setIsConnecting(false)
-      window.location.hash = ''
-      setScreen('home')
+      finishRoomSession()
+    })
+  }
+
+  function deleteRoom() {
+    const me = roomSession?.players.find((player) => player.id === roomSession.currentPlayerId)
+    if (!me?.isHost) return
+    if (!window.confirm('Eliminare definitivamente la stanza per TUTTI? Tutte le carte e le mani andranno perse.')) return
+    if (!socket.connected) {
+      setConnectionIssue('Riconnettiti al server prima di eliminare la stanza.')
+      return
+    }
+    socket.timeout(8000).emit('room:delete', (error: Error | null, response?: DeleteResponse) => {
+      if (error || !response || response.ok === false) {
+        // The server also broadcasts room:deleted on success. This ACK is
+        // needed only for failures; receiving it late must not restore state.
+        setConnectionIssue(response && response.ok === false ? inItalian(response.error) : 'Impossibile eliminare la stanza. Riprova.')
+      } else {
+        finishRoomSession('Stanza eliminata.')
+      }
     })
   }
 
@@ -236,6 +276,7 @@ function App() {
     return (
       <TableSurface
         onBackHome={openHome}
+        onDeleteRoom={deleteRoom}
         currentPlayerId={roomSession.currentPlayerId}
         roomId={roomSession.roomId}
         players={roomSession.players}
@@ -256,8 +297,8 @@ function App() {
 
         <p className="text-sm text-ivory/60">
           {connectionStatus === 'resuming'
-            ? 'Restoring your session...'
-            : 'Reconnecting to your table...'}
+            ? 'Ripristino della sessione…'
+            : 'Riconnessione al tavolo…'}
         </p>
 
         {connectionIssue && (
@@ -271,7 +312,18 @@ function App() {
           onClick={retryConnection}
           className="rounded-md border border-ivory/30 px-5 py-2 text-sm"
         >
-          Retry connection
+          Riprova la connessione
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm('Dimenticare la sessione su questo dispositivo? Il server potrebbe mantenere il tuo posto fino alla scadenza.')) {
+              finishRoomSession('Sessione dimenticata su questo dispositivo.')
+            }
+          }}
+          className="rounded-md px-5 py-2 text-sm text-ivory/70 underline underline-offset-4"
+        >
+          Esci dal dispositivo
         </button>
       </main>
     )

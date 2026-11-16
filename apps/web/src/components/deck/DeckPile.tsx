@@ -34,7 +34,7 @@ export function DeckPile({
     <div className="table-card relative">
       {isEmpty ? (
         <div className="flex h-full w-full items-center justify-center rounded-lg border border-dashed border-ivory/25 text-xs text-ivory/45">
-          Empty
+          Vuoto
         </div>
       ) : (
         <button
@@ -74,8 +74,8 @@ export function DeckPile({
               ? 'cursor-move outline-2 outline-offset-4 outline-gold outline-dashed'
               : 'cursor-pointer'
           }`}
-          aria-label={`Deck, ${cardsRemaining} cards. Tap to draw to the table; use the To hand button to add a card to your hand.`}
-          title="Tap to draw to the table · use To hand to draw into your hand"
+          aria-label={`Mazzo: ${cardsRemaining} carte. Tocca per pescare sul tavolo; usa In mano per pescare nella mano.`}
+          title="Tocca per pescare sul tavolo · In mano per pescare nella mano"
         >
           {Array.from({ length: edgeCount }, (_, index) => {
             const offset = (edgeCount - index) * 1.5
@@ -96,13 +96,13 @@ export function DeckPile({
       )}
 
       <div className="game-deck-caption pointer-events-none absolute top-full left-0 mt-4 whitespace-nowrap">
-        <p className="text-sm font-medium text-ivory/90">Deck</p>
+        <p className="text-sm font-medium text-ivory/90">Mazzo</p>
         <p className="mt-0.5 text-xs text-ivory/50 tabular-nums">
           {isMoving
-            ? 'Drop it where you want it'
+            ? 'Rilascia il mazzo dove vuoi'
             : isEmpty
-              ? 'Reset the table to refill'
-              : `${cardsRemaining} left · tap to draw`}
+              ? 'Azzera il tavolo per ricominciare'
+              : `${cardsRemaining} rimaste · tocca per pescare`}
         </p>
       </div>
     </div>

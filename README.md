@@ -1,6 +1,6 @@
 # VirtualDecks
 
-**V1 in sviluppo · R0–R2.7 implementate e collaudate progressivamente; R3 implementata e in attesa di QA mobile conclusivo.** Tavolo virtuale multiplayer con carte francesi (52) e italiane (40), senza regole di gioco imposte. Da uno a otto partecipanti; server autoritativo e mani private.
+**V1 in sviluppo · R3.1 integrata; fix carte italiane e gestione stanze del 16/11/2026 in attesa di QA completa.** Tavolo virtuale multiplayer con carte francesi (52) e italiane (40), senza regole di gioco imposte. Da uno a otto partecipanti; server autoritativo e mani private.
 
 ## Specifiche V1 approvate
 
@@ -30,7 +30,7 @@ npm run build:web
 npm run lint:web
 ```
 
-Il backend compila e **29 test su 29 passano** per R3, incluso il test della mano vuota. Il typecheck React/TypeScript non segnala errori. La compilazione Vite e il lint con moduli nativi devono ancora essere verificati dopo una reinstallazione locale (`npm ci`), così come i test manuali su dispositivi mobili.
+La baseline R3 riportava **29 test superati**. Per la patch del 16/11/2026 risultano superati i **16 test eseguibili senza dipendenze installate** (13 di logica/guardrail e 3 di action ID); sono stati aggiunti 2 test Socket.IO per l'eliminazione stanze, ma l'intera suite e il typecheck/build del frontend devono essere rieseguiti dopo `npm ci` (rete npm non disponibile nell'ambiente di verifica). Restano necessari anche i test manuali sui dispositivi mobili.
 
 ## Configurazione di rete
 
@@ -64,3 +64,7 @@ Per le protezioni R3 (rate limiting, origine Socket.IO, dimensioni dei messaggi,
 ## R3.1 — Hardening pre-beta
 
 Patch R3.1 applicata sulla R3: limiti alle connessioni simultanee e agli handshake per IP, rate limiter con memoria limitata, IP inoltrati solo da proxy fidati, configurazioni validate, metriche aggregate protette da token, readiness, log JSON e arresto ordinato. **Nessuna modifica al frontend o alle regole del tavolo.** Leggere [R3_1_NOTES_2026-11-10.md](R3_1_NOTES_2026-11-10.md) per i nuovi parametri e le precauzioni di deployment. R4 rimane necessaria prima della beta privata.
+
+## Aggiornamento 16/11/2026 — carte italiane e stanze
+
+Le carte italiane hanno adesso emblemi originali in SVG, pips e figure leggibili su desktop/mobile (non riproduzioni di un mazzo regionale storico). Dal tavolo, **Actions → Leave room** permette a tutti di uscire. L'host corrente può usare **Actions → Delete room for everyone…** per chiudere definitivamente la stanza e invalidarne il codice per tutti. Un nuovo evento `room:deleted` notifica i client connessi. Per flusso, limitazioni e test vedere [PATCH_NOTES_2026-11-16.md](PATCH_NOTES_2026-11-16.md).

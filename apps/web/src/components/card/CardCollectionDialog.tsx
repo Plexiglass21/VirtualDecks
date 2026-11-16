@@ -46,14 +46,14 @@ export function CardCollectionDialog({
               {title}
             </h2>
             <span className="text-sm text-ivory/50 tabular-nums">
-              {count} {count === 1 ? 'card' : 'cards'}, bottom to top
+              {count} {count === 1 ? 'carta' : 'carte'}, dal basso verso l'alto
             </span>
           </div>
 
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close"
+            aria-label="Chiudi"
             className="flex h-8 w-8 items-center justify-center rounded-md text-ivory/60 transition-colors hover:bg-white/[0.06] hover:text-ivory focus-visible:outline-2 focus-visible:outline-gold"
           >
             <svg viewBox="0 0 14 14" aria-hidden="true" className="h-3.5 w-3.5">
@@ -74,7 +74,7 @@ export function CardCollectionDialog({
                   )}
                 </div>
                 <span className="text-[11px] text-ivory/40 tabular-nums">
-                  {index === count - 1 ? 'Top' : index + 1}
+                  {index === count - 1 ? 'In cima' : index + 1}
                 </span>
               </li>
             ))}
@@ -83,22 +83,22 @@ export function CardCollectionDialog({
 
         {(onExtractTopCard || onFlipPile || onRotatePile || onShufflePile) && count > 0 && (
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-white/[0.07] px-4 py-4 sm:px-6">
-            {onFlipPile && <button type="button" onClick={onFlipPile} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Flip pile</button>}
-            {onRotatePile && <button type="button" onClick={onRotatePile} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Rotate 90°</button>}
-            {onShufflePile && <button type="button" onClick={() => { onShufflePile(); onClose() }} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Shuffle pile</button>}
+            {onFlipPile && <button type="button" onClick={onFlipPile} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Gira pila</button>}
+            {onRotatePile && <button type="button" onClick={onRotatePile} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Ruota di 90°</button>}
+            {onShufflePile && <button type="button" onClick={() => { onShufflePile(); onClose() }} className="rounded-md border border-white/15 px-3 py-2 text-sm text-ivory/80 hover:bg-white/10">Mescola pila</button>}
             <button
               type="button"
               onClick={onClose}
               className="h-9 rounded-md px-4 text-sm text-ivory/70 transition-colors hover:text-ivory"
             >
-              Close
+              Chiudi
             </button>
             {onExtractTopCard && <button
               type="button"
               onClick={onExtractTopCard}
               className="h-9 rounded-md bg-ivory px-4 text-sm font-semibold text-ink transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
             >
-              Take the top card
+              Prendi la carta in cima
             </button>}
           </div>
         )}

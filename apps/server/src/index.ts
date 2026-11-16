@@ -24,6 +24,7 @@ type RoomResponse =
   | { ok: false; error: string }
 type ActionResponse = ReturnType<typeof applyAction>
 type LeaveResponse = { ok: true } | { ok: false; error: string }
+type DeleteResponse = { ok: true } | { ok: false; error: string }
 type SocketData = { roomId?: string; playerId?: string }
 
 interface ClientToServerEvents {
@@ -31,12 +32,14 @@ interface ClientToServerEvents {
   'room:join': (roomCode: string, nickname: unknown, ack: (response: RoomResponse) => void) => void
   'room:resume': (credentials: unknown, ack: (response: RoomResponse) => void) => void
   'room:leave': (ack: (response: LeaveResponse) => void) => void
+  'room:delete': (ack: (response: DeleteResponse) => void) => void
   'table:action': (action: unknown, ack: (response: ActionResponse) => void) => void
 }
 interface ServerToClientEvents {
   'room:players': (players: PublicPlayer[]) => void
   'table:state': (table: ReturnType<typeof viewFor>) => void
   'room:notice': (message: string) => void
+  'room:deleted': (message: string) => void
 }
 
 const config = loadConfig() // fail fast on unsafe or malformed production settings
@@ -409,6 +412,36 @@ io.on('connection', (socket) => {
       return ack({ ok: false, error: 'You are not in an active room.' })
     }
     depart(room, playerId)
+    ack({ ok: true })
+  })
+
+  // Explicit permanent deletion: only the CURRENT host can close a room.
+  // Broadcast before unbinding sockets, so even reconnect-capable clients know
+  // to clear their saved resume tokens instead of trying to restore a dead room.
+  socket.on('room:delete', (ack) => {
+    if (typeof ack !== 'function') return
+    const { roomId, playerId } = socket.data
+    const room = roomId ? rooms.get(roomId) : undefined
+    const player = room?.players.find((candidate) => candidate.id === playerId)
+    if (!room || !player || player.socketId !== socket.id) {
+      return ack({ ok: false, error: 'You are not in an active room.' })
+    }
+    if (room.hostPlayerId !== playerId) {
+      return ack({ ok: false, error: 'Only the room host can delete the room.' })
+    }
+    io.to(room.id).emit('room:deleted', 'The host has deleted this room.')
+    for (const occupant of room.players) {
+      if (!occupant.socketId) continue
+      const memberSocket = io.sockets.sockets.get(occupant.socketId)
+      memberSocket?.leave(room.id)
+      memberSocket?.leave(`${room.id}:${occupant.id}`)
+      if (memberSocket) {
+        memberSocket.data.roomId = undefined
+        memberSocket.data.playerId = undefined
+      }
+    }
+    room.completedActions.clear()
+    rooms.delete(room.id)
     ack({ ok: true })
   })
 

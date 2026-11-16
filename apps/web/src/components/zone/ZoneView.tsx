@@ -1,6 +1,7 @@
 import { CardBack } from '../card/CardBack'
 import { CardFront } from '../card/CardFront'
 import type { Zone } from '../../types/zone'
+import { inItalian } from '../../utils/italian'
 
 type ZoneViewProps = {
   zone: Zone
@@ -22,7 +23,7 @@ export function ZoneView({
           type="button"
           onClick={onOpen}
           className="group relative block h-full w-full cursor-pointer rounded-lg focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gold"
-          aria-label={`${zone.label}, ${count} cards. Tap to open.`}
+          aria-label={`${inItalian(zone.label)}, ${count} carte. Tocca per aprire.`}
         >
           {Array.from({ length: edgeCount }, (_, index) => {
             const offset = (edgeCount - index) * 1.5
@@ -46,14 +47,14 @@ export function ZoneView({
         </button>
       ) : (
         <div className="flex h-full w-full items-center justify-center rounded-lg border border-dashed border-ivory/25 px-4 text-center text-xs leading-relaxed text-ivory/45">
-          Drop cards here
+          Rilascia le carte qui
         </div>
       )}
 
       <div className="game-zone-caption pointer-events-none absolute top-full left-0 mt-4 whitespace-nowrap">
-        <p className="text-sm font-medium text-ivory/90">{zone.label}</p>
+        <p className="text-sm font-medium text-ivory/90">{inItalian(zone.label)}</p>
         <p className="mt-0.5 text-xs text-ivory/50 tabular-nums">
-          {count === 0 ? 'Empty' : `${count} ${count === 1 ? 'card' : 'cards'}`}
+          {count === 0 ? 'Vuota' : `${count} ${count === 1 ? 'carta' : 'carte'}`}
         </p>
       </div>
     </div>

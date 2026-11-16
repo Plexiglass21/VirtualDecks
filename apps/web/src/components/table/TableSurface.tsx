@@ -18,9 +18,11 @@ import { ZoneView } from '../zone/ZoneView'
 import type { Player } from '../../types/player'
 import type { TableGameState } from '../../types/game'
 import { socket } from '../../multiplayer/socket'
+import { inItalian } from '../../utils/italian'
 
 type TableSurfaceProps = {
   onBackHome?: () => void
+  onDeleteRoom?: () => void
   currentPlayerId: string
   roomId: string
   players: Player[]
@@ -38,11 +40,12 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-export function TableSurface({ onBackHome, currentPlayerId, roomId, players, initialTableState, connectionStatus, connectionIssue, onRetryConnection }: TableSurfaceProps) {
+export function TableSurface({ onBackHome, onDeleteRoom, currentPlayerId, roomId, players, initialTableState, connectionStatus, connectionIssue, onRetryConnection }: TableSurfaceProps) {
   const tableRef = useRef<HTMLElement | null>(null)
   const handRef = useRef<HTMLDivElement | null>(null)
   const zoneRef = useRef<HTMLDivElement | null>(null)
   const actionMenuRef = useRef<HTMLDivElement | null>(null)
+  const mobileDockRef = useRef<HTMLElement | null>(null)
   const noticeId = useRef(0)
 
   const tableSize = useElementSize(tableRef)
@@ -57,6 +60,8 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
   } | null>(null)
   const [notice, setNotice] = useState<{ id: number, text: string } | null>(null)
   const [actionMenuOpen, setActionMenuOpen] = useState(false)
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
+  const [draggingCard, setDraggingCard] = useState(false)
   const [confirmingReset, setConfirmingReset] = useState(false)
   const [isMovingDeck, setIsMovingDeck] = useState(false)
   const [dealingOpen, setDealingOpen] = useState(false)
@@ -100,10 +105,10 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
       else if (document.documentElement.requestFullscreen && document.fullscreenEnabled) {
         await document.documentElement.requestFullscreen()
       } else {
-        notify('Fullscreen unavailable in this browser. Try Add to Home screen.')
+        notify('Schermo intero non disponibile. Prova Aggiungi alla schermata Home.')
       }
     } catch {
-      notify('Fullscreen blocked by the browser. Try Add to Home screen.')
+      notify('Schermo intero bloccato dal browser. Prova Aggiungi alla schermata Home.')
     }
   }
 
@@ -191,7 +196,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
     }
 
     function handleRoomNotice(message: string) {
-      notify(message)
+      notify(inItalian(message))
     }
 
     socket.on('table:state', handleTableState)
@@ -227,6 +232,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
 
   function closeActionMenu() {
     setActionMenuOpen(false)
+    setMobileMoreOpen(false)
     setConfirmingReset(false)
   }
 
@@ -236,29 +242,29 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
         setIsMovingDeck((current) => !current)
         return
       case 'shuffle':
-        if (await shuffleDeck()) notify('Deck shuffled')
+        if (await shuffleDeck()) notify('Mazzo mescolato')
         return
       case 'create-pile':
         if (!canCreatePile) {
-          notify('Select at least two cards first')
+          notify('Seleziona almeno due carte')
           return
         }
 
-        if (await createPileFromSelection()) notify('Pile made')
+        if (await createPileFromSelection()) notify('Pila creata')
         return
       case 'flip-selected':
         if (!canFlipSelected) {
-          notify('Select a card first')
+          notify('Seleziona prima una carta')
           return
         }
-        if (await flipSelectedCards()) notify(selectedCardIds.length === 1 ? 'Card flipped' : `${selectedCardIds.length} cards flipped`)
+        if (await flipSelectedCards()) notify(selectedCardIds.length === 1 ? 'Carta girata' : `${selectedCardIds.length} carte girate`)
         return
       case 'rotate-selected':
         if (!canFlipSelected) {
-          notify('Tap a card first')
+          notify('Tocca prima una carta')
           return
         }
-        if (await rotateSelectedCards()) notify(`${selectedCardIds.length} cards rotated`)
+        if (await rotateSelectedCards()) notify(`${selectedCardIds.length} carte ruotate`)
         return
       case 'deal':
         setDealingOpen(true)
@@ -272,16 +278,16 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
         setRevealDialogMode('selected')
         return
       case 'hide-hand':
-        if (await hideRevealedHandCards()) notify('Hand display hidden')
+        if (await hideRevealedHandCards()) notify('Mano nascosta')
         return
       case 'reset':
         if (!isHost) {
-          notify('Only the host can reset the table')
+          notify('Solo l’host può azzerare il tavolo')
           return
         }
         if (await resetGame()) {
           setIsMovingDeck(false)
-          notify('Fresh deck, empty table')
+          notify('Nuovo mazzo, tavolo libero')
         }
         return
     }
@@ -328,7 +334,8 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
-      if (actionMenuRef.current && !actionMenuRef.current.contains(event.target as Node)) {
+      if (actionMenuRef.current && !actionMenuRef.current.contains(event.target as Node) &&
+          !mobileDockRef.current?.contains(event.target as Node)) {
         closeActionMenu()
       }
     }
@@ -349,7 +356,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
   async function handleDrawToTable() {
     // Acknowledged feedback distinguishes a successful touch from a rejected
     // draw. Do not claim success before the authoritative server responds.
-    if (await drawCard(getDrawLanding(), deckPosition)) notify('Card drawn')
+    if (await drawCard(getDrawLanding(), deckPosition)) notify('Carta pescata')
   }
 
   function handleDrawToHand() {
@@ -360,7 +367,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
 
   async function handlePlaySelectedHandCard(toDiscard = false) {
     if (!playerHand || !selectedHandCard) {
-      notify('Select a card from your hand first')
+      notify('Seleziona prima una carta della tua mano')
       return
     }
     const ok = toDiscard && discardZone
@@ -371,16 +378,16 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
         })
     if (ok) {
       setSelectedHandCardIds((ids) => ids.filter((id) => id !== selectedHandCard.id))
-      notify(toDiscard ? 'Card moved to discard' : 'Card played to table')
+      notify(toDiscard ? 'Carta spostata negli scarti' : 'Carta giocata sul tavolo')
     }
   }
 
   async function handleCopyRoomCode() {
     try {
       await navigator.clipboard.writeText(roomId)
-      notify('Room code copied')
+      notify('Codice stanza copiato')
     } catch {
-      notify(`Room code: ${roomId}`)
+      notify(`Codice stanza: ${roomId}`)
     }
   }
 
@@ -391,7 +398,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
       if (await moveDeck({
         x: clamp(deckPosition.x + deckX.get() / width, 0.06, 0.94),
         y: clamp(deckPosition.y + deckY.get() / height, 0.14, 0.8),
-      })) notify('Deck moved')
+      })) notify('Mazzo spostato')
     }
 
     setIsMovingDeck(false)
@@ -401,8 +408,8 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
     <main className="game-page bg-night p-1.5 sm:p-3 md:p-5">
       <section
         ref={tableRef}
-        aria-label="Card table"
-        className="game-table felt table-edge relative overflow-hidden rounded-[1rem] sm:rounded-[1.25rem]"
+        aria-label="Tavolo da gioco"
+        className={`game-table felt table-edge relative overflow-hidden rounded-[1rem] sm:rounded-[1.25rem] ${draggingCard ? 'dragging-card' : ''}`}
         onContextMenu={(event) => event.preventDefault()}
         onPointerDown={(event) => {
           if (event.target === event.currentTarget) {
@@ -415,15 +422,15 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
         <div aria-hidden="true" className="game-playfield-background absolute inset-0" onPointerDown={clearSelection} />
         <header className={`game-header pointer-events-none absolute inset-x-0 top-0 ${actionMenuOpen ? 'z-[70]' : 'z-40'} flex items-center justify-between gap-2 px-3 py-3 sm:px-5 sm:py-4 md:px-8 md:py-6`}>
           <div className="pointer-events-auto">
-            <Wordmark onClick={onBackHome} />
+            <Wordmark />
           </div>
 
           <div className="game-room-code pointer-events-auto absolute top-[3.45rem] left-1/2 w-max max-w-[calc(100%-1rem)] -translate-x-1/2 sm:top-1/2 sm:-translate-y-1/2">
-            <button type="button" onClick={handleCopyRoomCode} title="Copy room code" className="rounded-full border border-ivory/10 bg-black/30 px-3 py-1.5 text-[11px] text-ivory/70 hover:bg-black/50 focus-visible:outline-2 focus-visible:outline-gold sm:text-xs">
-              Room <span className="font-semibold tracking-[0.12em] text-ivory/95">{roomId}</span>
+            <button type="button" onClick={handleCopyRoomCode} title="Copia il codice stanza" className="rounded-full border border-ivory/10 bg-black/30 px-3 py-1.5 text-[11px] text-ivory/70 hover:bg-black/50 focus-visible:outline-2 focus-visible:outline-gold sm:text-xs">
+              Stanza <span className="font-semibold tracking-[0.12em] text-ivory/95">{roomId}</span>
               <span className="mx-2 text-ivory/30">·</span>
-              {onlineCount}/{players.length} online
-              <span className="ml-2 text-gold">Copy</span>
+              {onlineCount}/{players.length} in linea
+              <span className="ml-2 text-gold">Copia</span>
             </button>
           </div>
 
@@ -431,8 +438,8 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
             <button
               type="button"
               onClick={toggleFullscreen}
-              aria-label={fullscreenActive ? 'Exit fullscreen' : 'Enter fullscreen'}
-              title={fullscreenActive ? 'Exit fullscreen' : 'Fullscreen (if available)'}
+              aria-label={fullscreenActive ? 'Esci dallo schermo intero' : 'Schermo intero'}
+              title={fullscreenActive ? 'Esci dallo schermo intero' : 'Schermo intero (se disponibile)'}
               className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-ivory/15 bg-black/25 text-ivory/90 transition-colors hover:border-ivory/25 hover:bg-black/35 focus-visible:outline-2 focus-visible:outline-gold"
             >
               {fullscreenActive ? (
@@ -446,9 +453,9 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
               aria-haspopup="menu"
               aria-expanded={actionMenuOpen}
               onClick={() => (actionMenuOpen ? closeActionMenu() : setActionMenuOpen(true))}
-              className="inline-flex h-10 items-center gap-2 rounded-md border border-ivory/15 bg-black/25 px-3.5 text-sm font-medium text-ivory/90 transition-colors hover:border-ivory/25 hover:bg-black/35 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
+              className="game-header-actions-button inline-flex h-10 items-center gap-2 rounded-md border border-ivory/15 bg-black/25 px-3.5 text-sm font-medium text-ivory/90 transition-colors hover:border-ivory/25 hover:bg-black/35 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
             >
-              Actions
+              Azioni
               <svg
                 viewBox="0 0 12 12"
                 aria-hidden="true"
@@ -469,43 +476,52 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
                   className="game-action-menu absolute top-full right-0 mt-2 max-h-[calc(100dvh-5rem)] w-60 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-lg border border-white/10 bg-[#141614]/95 p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)] backdrop-blur-sm"
                 >
                   <MenuItem shortcut="S" onClick={() => handleMenuAction('shuffle')}>
-                    Shuffle deck
+                    Mescola mazzo
                   </MenuItem>
                   <MenuItem shortcut="P" disabled={!canCreatePile} onClick={() => handleMenuAction('create-pile')}>
-                    Make a pile
+                    Crea pila
                   </MenuItem>
                   <MenuItem shortcut="F" disabled={!canFlipSelected} onClick={() => handleMenuAction('flip-selected')}>
-                    Flip selected
+                    Gira selezionate
                   </MenuItem>
                   <MenuItem shortcut="R" disabled={!canFlipSelected} onClick={() => handleMenuAction('rotate-selected')}>
-                    Rotate selected 90°
+                    Ruota selezionate 90°
                   </MenuItem>
                   <MenuItem onClick={() => handleMenuAction('move-deck')}>
-                    {isMovingDeck ? 'Cancel moving deck' : 'Move deck'}
+                    {isMovingDeck ? 'Annulla spostamento' : 'Sposta mazzo'}
                   </MenuItem>
                   <MenuItem disabled={deckCount === 0 || players.length === 0} onClick={() => handleMenuAction('deal')}>
-                    Deal cards…
+                    Distribuisci carte…
                   </MenuItem>
                   <div className="mx-2 my-1.5 h-px bg-white/10" />
                   <MenuItem disabled={!canShowHand || players.length < 2} onClick={() => handleMenuAction('show-hand-all')}>
-                    Show entire hand
+                    Mostra tutta la mano
                   </MenuItem>
                   <MenuItem disabled={!canShowSelected || players.length < 2} onClick={() => handleMenuAction('show-hand-selected')}>
-                    Show selected hand cards
+                    Mostra carte selezionate
                   </MenuItem>
                   <MenuItem disabled={!isShowingHand} onClick={() => handleMenuAction('hide-hand')}>
-                    Hide revealed cards
+                    Nascondi carte mostrate
                   </MenuItem>
                   <div className="mx-2 my-1.5 h-px bg-white/10" />
                   <MenuItem destructive disabled={!isHost} onClick={() => handleMenuAction('reset')}>
-                    {confirmingReset ? 'Confirm reset: clear the table' : 'Reset table'}
+                    {confirmingReset ? 'Conferma: azzera il tavolo' : 'Azzera tavolo'}
                   </MenuItem>
+                  <div className="mx-2 my-1.5 h-px bg-white/10" />
+                  <MenuItem onClick={() => { closeActionMenu(); onBackHome?.() }}>
+                    Abbandona stanza
+                  </MenuItem>
+                  {isHost && (
+                    <MenuItem destructive onClick={() => { closeActionMenu(); onDeleteRoom?.() }}>
+                      Elimina stanza per tutti…
+                    </MenuItem>
+                  )}
                   <div className="mt-2 border-t border-white/10 px-2.5 pt-3 pb-1 lg:hidden">
-                    <p className="mb-2 text-[10px] font-semibold tracking-[0.12em] text-ivory/45 uppercase">Players</p>
+                    <p className="mb-2 text-[10px] font-semibold tracking-[0.12em] text-ivory/45 uppercase">Giocatori</p>
                     <div className="flex flex-wrap gap-1.5">
                       {players.map((player) => (
                         <span key={player.id} className={`rounded-full border px-2 py-1 text-[10px] ${player.online ? 'border-ivory/20 text-ivory/80' : 'border-ivory/10 text-ivory/40'}`}>
-                          {player.online ? '●' : '○'} {player.name}{player.isHost ? ' · Host' : ''}{player.id === currentPlayerId ? ' · You' : ''}
+                          {player.online ? '●' : '○'} {player.name}{player.isHost ? ' · Host' : ''}{player.id === currentPlayerId ? ' · Tu' : ''}
                         </span>
                       ))}
                     </div>
@@ -524,10 +540,10 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
 
         {connectionStatus !== 'connected' && (
           <div role="status" className="absolute inset-x-5 top-[5.25rem] z-[60] mx-auto max-w-md rounded-lg border border-amber-300/25 bg-black/80 px-4 py-3 text-center text-sm text-ivory shadow-lg">
-            <div className="font-medium">{connectionStatus === 'resuming' ? 'Restoring your session…' : 'Connection interrupted — reconnecting…'}</div>
+            <div className="font-medium">{connectionStatus === 'resuming' ? 'Ripristino della sessione…' : 'Connessione interrotta — riconnessione…'}</div>
             {connectionIssue && <div className="mt-1 text-xs text-ivory/65">{connectionIssue}</div>}
             {connectionStatus === 'reconnecting' && (
-              <button type="button" onClick={onRetryConnection} className="mt-2 rounded border border-ivory/30 px-3 py-1.5 text-xs text-ivory/85 hover:bg-white/10">Try reconnecting</button>
+              <button type="button" onClick={onRetryConnection} className="mt-2 rounded border border-ivory/30 px-3 py-1.5 text-xs text-ivory/85 hover:bg-white/10">Riprova la connessione</button>
             )}
           </div>
         )}
@@ -536,10 +552,10 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
           <div role="alert" className="absolute inset-x-5 top-[5.25rem] z-[60] mx-auto max-w-md rounded-lg bg-black/80 px-4 py-3 text-center text-sm text-[#e08a80]">{connectionIssue}</div>
         )}
 
-        <div aria-label="Room participants" className="pointer-events-none absolute right-5 bottom-5 z-40 hidden max-w-[17rem] flex-wrap justify-end gap-1.5 lg:flex">
+        <div aria-label="Partecipanti alla stanza" className="pointer-events-none absolute right-5 bottom-5 z-40 hidden max-w-[17rem] flex-wrap justify-end gap-1.5 lg:flex">
           {players.map((player) => (
-            <span key={player.id} title={player.online ? 'Online' : 'Disconnected; seat saved'} className={`rounded-full border px-2.5 py-1 text-[11px] ${player.online ? 'border-ivory/20 bg-black/25 text-ivory/80' : 'border-ivory/10 bg-black/15 text-ivory/35'}`}>
-              <span aria-hidden="true">{player.online ? '●' : '○'}</span>{' '}{player.name}{player.isHost ? ' · Host' : ''}{player.id === currentPlayerId ? ' · You' : ''}
+            <span key={player.id} title={player.online ? 'In linea' : 'Disconnesso; posto conservato'} className={`rounded-full border px-2.5 py-1 text-[11px] ${player.online ? 'border-ivory/20 bg-black/25 text-ivory/80' : 'border-ivory/10 bg-black/15 text-ivory/35'}`}>
+              <span aria-hidden="true">{player.online ? '●' : '○'}</span>{' '}{player.name}{player.isHost ? ' · Host' : ''}{player.id === currentPlayerId ? ' · Tu' : ''}
             </span>
           ))}
         </div>
@@ -547,7 +563,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
         <div className="game-notice pointer-events-none absolute top-[6.4rem] left-1/2 z-50 w-max max-w-[calc(100%-1rem)] -translate-x-1/2 sm:top-18 md:top-22">
           <AnimatePresence mode="wait">
             {isMovingDeck ? (
-              <Notice key="moving-deck">Drag the deck to move it · Actions to cancel</Notice>
+              <Notice key="moving-deck">Trascina il mazzo · Azioni per annullare</Notice>
             ) : notice && (
               <Notice key={notice.id}>{notice.text}</Notice>
             )}
@@ -586,7 +602,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
               zone={zone}
               onOpen={() =>
                 setOpenCollection({
-                  title: zone.label,
+                  title: inItalian(zone.label),
                   cards: zone.cards,
                   onExtractTopCard: () => {
                     extractTopCardFromZone(zone.id, { x: 0.7, y: 0.46 })
@@ -610,7 +626,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
               onDragStart={() => bringPileToFront(pile.id)}
               onOpen={() => {
                 setOpenCollection({
-                  title: 'Pile',
+                  title: 'Pila',
                   cards: pile.cards,
                   onRotatePile: () => { rotatePile(pile.id); setOpenCollection(null) },
                   onFlipPile: () => { flipPile(pile.id); setOpenCollection(null) },
@@ -642,6 +658,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
               onSelect={(additive) => selectCard(card.id, additive)}
               onSelectOnly={() => selectOnlyCard(card.id)}
               onDragStart={() => bringLooseCardToFront(card.id)}
+              onDragActiveChange={setDraggingCard}
               onDragMove={(delta) => moveSelectedCards(card.id, delta)}
               onFlip={() => flipCard(card.id)}
               onPositionCommit={(position) => {
@@ -682,8 +699,8 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
 
         <div className="pointer-events-none absolute bottom-5 left-5 z-20 hidden max-w-[17rem] text-xs leading-relaxed text-ivory/45 md:left-8 lg:block">
           <p>
-            Double-click a card to flip it. Shift-click to pick up several, then press{' '}
-            <Kbd>P</Kbd> to stack them.
+            Doppio clic per girare una carta. Maiusc + clic per selezionarne più di una, poi premi{' '}
+            <Kbd>P</Kbd> per impilarle.
           </p>
         </div>
 
@@ -698,6 +715,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
               tableRef={tableRef}
               selectedCardIds={selectedHandCardIds}
               onToggleCardSelection={(id) => setSelectedHandCardIds((selected) => selected.includes(id) ? selected.filter((cardId) => cardId !== id) : [...selected, id])}
+              onDragActiveChange={setDraggingCard}
               onDropCard={(cardId, position) => {
                 // Dropped back onto the hand: let it snap back into place.
                 if (isPositionInside(handRef.current, position, 16)) return
@@ -713,30 +731,58 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
           ))}
         </div>
 
-        {/* Tap the deck to draw; contextual controls are always visible on touch. */}
-        <nav aria-label="Touch table controls" className={`game-touch-actions absolute z-40 ${playerHand?.cards.length ? 'with-hand' : 'without-hand'}`}>
+        {/* Mobile: four primary actions; secondary actions in a scrollable bottom sheet. */}
+        <nav ref={mobileDockRef} aria-label="Comandi del tavolo" className={`game-touch-actions absolute z-40 ${playerHand?.cards.length ? 'with-hand' : 'without-hand'}`}>
           <div className="game-dock-status" role="status">
-            {selectedCardIds.length
-              ? `${selectedCardIds.length} card${selectedCardIds.length === 1 ? '' : 's'} selected`
-              : 'Tap a card to select · tap the deck to draw'}
+            {selectedCardIds.length || selectedHandCardIds.length
+              ? `${selectedCardIds.length + selectedHandCardIds.length} carte selezionate`
+              : 'Tocca una carta per selezionarla · tocca il mazzo per pescare'}
           </div>
-          <TouchAction onClick={handleDrawToHand} disabled={deckCount === 0 || !playerHand || isMovingDeck}>To hand</TouchAction>
-          <TouchAction active={multiSelectMode} onClick={() => { setMultiSelectMode((value) => !value); clearSelection() }}>Multi</TouchAction>
-          <TouchAction onClick={() => { clearSelection(); setMultiSelectMode(false) }} disabled={!selectedCardIds.length}>Clear</TouchAction>
-          <TouchAction onClick={() => runAction('flip-selected')}>Flip</TouchAction>
-          <TouchAction onClick={() => runAction('rotate-selected')}>Rotate</TouchAction>
-          <TouchAction onClick={() => runAction('create-pile')}>Pile</TouchAction>
+          <TouchAction onClick={handleDrawToHand} disabled={deckCount === 0 || !playerHand || isMovingDeck}>In mano</TouchAction>
+          <TouchAction onClick={() => handlePlaySelectedHandCard()} disabled={!selectedHandCard}>Gioca</TouchAction>
           <TouchAction onClick={() => {
-            if (!selectedCardIds.length) notify('Tap a card first')
-            else if (playerHand) moveSelectedCardsToHand()
-          }} disabled={!playerHand}>Pick up</TouchAction>
-          <TouchAction onClick={() => {
-            if (!selectedCardIds.length) notify('Tap a card first')
-            else if (discardZone) moveSelectedCardsToZone(discardZone.id)
-          }} disabled={!discardZone}>Discard</TouchAction>
-          <TouchAction onClick={() => handlePlaySelectedHandCard()}>Play</TouchAction>
-          <TouchAction onClick={() => handlePlaySelectedHandCard(true)} disabled={!discardZone}>Hand → bin</TouchAction>
-          {isMovingDeck && <TouchAction onClick={() => setIsMovingDeck(false)}>Cancel move</TouchAction>}
+            if (selectedHandCard && discardZone) void handlePlaySelectedHandCard(true)
+            else if (selectedCardIds.length && discardZone) void moveSelectedCardsToZone(discardZone.id)
+          }} disabled={!discardZone || (!selectedHandCard && !selectedCardIds.length)}>Scarta</TouchAction>
+          <TouchAction active={mobileMoreOpen} onClick={() => setMobileMoreOpen((open) => !open)}>Altro {mobileMoreOpen ? '×' : '☰'}</TouchAction>
+          <AnimatePresence>
+            {mobileMoreOpen && (
+              <motion.div
+                role="menu"
+                aria-label="Altre azioni"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 12 }}
+                transition={{ duration: 0.15 }}
+                className="game-mobile-more absolute inset-x-0 bottom-[calc(100%+8px)] rounded-xl border border-white/15 bg-[#141c18]/98 p-3 text-ivory shadow-2xl backdrop-blur-lg"
+              >
+                <div className="mb-2 flex items-center justify-between border-b border-white/10 pb-2">
+                  <strong className="text-sm">Altre azioni</strong>
+                  <button type="button" aria-label="Chiudi altre azioni" onClick={() => setMobileMoreOpen(false)} className="h-10 w-10 rounded-md border border-white/15 text-lg">×</button>
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <MenuItem onClick={() => { setMultiSelectMode((mode) => !mode); clearSelection(); setMobileMoreOpen(false) }}>{multiSelectMode ? 'Fine selezione multipla' : 'Selezione multipla'}</MenuItem>
+                  <MenuItem disabled={!selectedCardIds.length} onClick={() => { clearSelection(); setMultiSelectMode(false); setMobileMoreOpen(false) }}>Deseleziona</MenuItem>
+                  <MenuItem disabled={!canFlipSelected} onClick={() => handleMenuAction('flip-selected')}>Gira selezionate</MenuItem>
+                  <MenuItem disabled={!canFlipSelected} onClick={() => handleMenuAction('rotate-selected')}>Ruota selezionate</MenuItem>
+                  <MenuItem disabled={!canCreatePile} onClick={() => handleMenuAction('create-pile')}>Crea pila</MenuItem>
+                  <MenuItem disabled={!playerHand || !selectedCardIds.length} onClick={() => { setMobileMoreOpen(false); void moveSelectedCardsToHand() }}>Prendi dal tavolo</MenuItem>
+                  <MenuItem onClick={() => handleMenuAction('shuffle')}>Mescola mazzo</MenuItem>
+                  <MenuItem disabled={deckCount === 0} onClick={() => handleMenuAction('deal')}>Distribuisci carte…</MenuItem>
+                  <MenuItem onClick={() => handleMenuAction('move-deck')}>{isMovingDeck ? 'Annulla spostamento' : 'Sposta mazzo'}</MenuItem>
+                  <MenuItem disabled={!canShowHand || players.length < 2} onClick={() => handleMenuAction('show-hand-all')}>Mostra tutta la mano</MenuItem>
+                  <MenuItem disabled={!canShowSelected || players.length < 2} onClick={() => handleMenuAction('show-hand-selected')}>Mostra selezionate</MenuItem>
+                  <MenuItem disabled={!isShowingHand} onClick={() => handleMenuAction('hide-hand')}>Nascondi carte mostrate</MenuItem>
+                  <MenuItem destructive disabled={!isHost} onClick={() => handleMenuAction('reset')}>{confirmingReset ? 'Conferma azzeramento' : 'Azzera tavolo'}</MenuItem>
+                  <MenuItem onClick={() => { closeActionMenu(); onBackHome?.() }}>Abbandona stanza</MenuItem>
+                  {isHost && <MenuItem destructive onClick={() => { closeActionMenu(); onDeleteRoom?.() }}>Elimina stanza per tutti…</MenuItem>}
+                </div>
+                <div className="mt-3 border-t border-white/10 pt-2 text-[11px] text-ivory/70">
+                  <strong>Giocatori</strong> · {players.map((player) => `${player.name}${player.isHost ? ' (host)' : ''}`).join(', ')}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </nav>
 
         {dealingOpen && (
@@ -748,7 +794,7 @@ export function TableSurface({ onBackHome, currentPlayerId, roomId, players, ini
               const ok = revealDialogMode === 'all'
                 ? await revealEntireHand(recipientIds)
                 : await revealSelectedHandCards(selectedHandCardIds, recipientIds)
-              if (ok) notify('Hand shared with selected players')
+              if (ok) notify('Mano condivisa con i giocatori selezionati')
               return ok
             }}
           />

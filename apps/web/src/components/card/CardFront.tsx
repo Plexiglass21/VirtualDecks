@@ -1,5 +1,7 @@
 import { isRedSuit } from '../../utils/suits'
 import { SuitIcon } from './SuitIcon'
+import { ItalianCardFront } from './ItalianCardFront'
+import { isItalianSuit } from './italianSuitData'
 
 type CardFrontProps = {
   rank: string
@@ -81,16 +83,7 @@ function CourtPanel({ rank, suit }: CardFrontProps) {
 }
 
 export function CardFront({ rank, suit }: CardFrontProps) {
-  // Temporary readable Italian card face; traditional artwork belongs to Block 4.
-  if (['coppe', 'denari', 'bastoni', 'spade'].includes(suit)) {
-    const suitLabels: Record<string, string> = { coppe: 'COPPE', denari: 'DENARI', bastoni: 'BASTONI', spade: 'SPADE' }
-    const rankLabels: Record<string, string> = { A: 'ASSO', F: 'FANTE', C: 'CAVALLO', R: 'RE' }
-    return <div className="card-face flex h-full w-full flex-col items-center justify-between overflow-hidden rounded-lg border-[3px] border-double border-suit-red/50 p-[8cqw] text-suit-black">
-      <span className="self-start text-[16cqw] font-bold">{rank}</span>
-      <span className="font-display text-center text-[16cqw] font-bold tracking-wide">{rankLabels[rank] ?? rank}<span className="mt-1 block text-[10cqw] font-semibold tracking-wide">{suitLabels[suit]}</span></span>
-      <span className="self-end rotate-180 text-[16cqw] font-bold">{rank}</span>
-    </div>
-  }
+  if (isItalianSuit(suit)) return <ItalianCardFront rank={rank} suit={suit} />
 
   const colorClass = isRedSuit(suit) ? 'text-suit-red' : 'text-suit-black'
 

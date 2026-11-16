@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { socket } from '../multiplayer/socket'
 import { createActionId } from '../utils/actionId'
+import { inItalian } from '../utils/italian'
 import type { TableGameState } from '../types/game'
 import type { NormalizedPosition } from '../types/position'
 
@@ -21,21 +22,21 @@ export function useTableGame(initial: TableGameState, onError: (message: string)
   // for that ID, so the second request cannot draw/deal/flip twice.
   const request = (action: Action): Promise<boolean> => {
     if (!socket.connected) {
-      onError('Connection lost. Your action was not sent.')
+      onError('Connessione persa. Azione non inviata.')
       return Promise.resolve(false)
     }
     let actionId: string
     try {
       actionId = createActionId()
     } catch {
-      onError('This browser could not generate an action ID. Please update your browser or use HTTPS.')
+      onError('Il browser non può generare un ID azione. Aggiorna il browser oppure usa HTTPS.')
       return Promise.resolve(false)
     }
     const packet = { ...action, actionId }
     return new Promise<boolean>((resolve) => {
       const attempt = (remainingRetries: number) => {
         if (!socket.connected) {
-          onError('Connection lost. The action could not be confirmed.')
+          onError('Connessione persa. Impossibile confermare l’azione.')
           resolve(false)
           return
         }
@@ -44,11 +45,11 @@ export function useTableGame(initial: TableGameState, onError: (message: string)
             if (remainingRetries > 0 && socket.connected) {
               attempt(remainingRetries - 1)
             } else {
-              onError('Could not confirm the action with the server. Refresh the table before repeating it.')
+              onError('Impossibile confermare l’azione. Ricarica il tavolo prima di riprovare.')
               resolve(false)
             }
           } else if (!response?.ok) {
-            onError(response?.error ?? 'Action rejected by server.')
+            onError(inItalian(response?.error ?? 'Azione rifiutata dal server.'))
             resolve(false)
           } else {
             resolve(true)

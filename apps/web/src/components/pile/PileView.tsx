@@ -126,7 +126,7 @@ export function PileView({
       onDragEnd={handleDragEnd}
       style={{ x, y, zIndex: pile.zIndex, rotate: pile.rotation }}
       className="group table-card absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none select-none active:cursor-grabbing focus-visible:outline-2 focus-visible:outline-gold"
-      aria-label={`Pile of ${pile.cards.length} cards. Tap to view actions.`}
+      aria-label={`Pila di ${pile.cards.length} carte. Tocca per vedere le azioni.`}
     >
       {Array.from({ length: edgeCount }, (_, index) => {
         const offset = (edgeCount - index) * 2

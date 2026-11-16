@@ -11,7 +11,7 @@ type HomeScreenProps = {
   roomError: string | null
 }
 
-const fan = [
+const frenchFan = [
   { rank: '9', suit: '♦', rotate: -22 },
   { rank: 'K', suit: '♣', rotate: -11 },
   { rank: 'A', suit: '♠', rotate: 0 },
@@ -19,18 +19,26 @@ const fan = [
   { rank: 'Q', suit: '♥', rotate: 22 },
 ]
 
+const italianFan = [
+  { rank: '7', suit: 'denari', rotate: -22 },
+  { rank: 'C', suit: 'spade', rotate: -11 },
+  { rank: 'A', suit: 'coppe', rotate: 0 },
+  { rank: 'F', suit: 'bastoni', rotate: 11 },
+  { rank: 'R', suit: 'denari', rotate: 22 },
+]
+
 const desktopControls = [
-  { action: 'Draw a card', how: <>Click the deck</> },
-  { action: 'Draw into your hand', how: <><Kbd>Shift</Kbd> + click the deck</> },
-  { action: 'Flip a card', how: <>Double-click it</> },
-  { action: 'Make a pile', how: <>Select a few, then <Kbd>P</Kbd></> },
+  { action: 'Pesca sul tavolo', how: <>Fai clic sul mazzo</> },
+  { action: 'Pesca nella mano', how: <><Kbd>Shift</Kbd> + clic sul mazzo</> },
+  { action: 'Gira una carta', how: <>Doppio clic</> },
+  { action: 'Crea una pila', how: <>Seleziona le carte, poi <Kbd>P</Kbd></> },
 ]
 
 const mobileControls = [
-  { action: 'Draw to the table', how: 'Tap the deck' },
-  { action: 'Draw into your hand', how: 'Use Deck → hand' },
-  { action: 'Flip / rotate', how: 'Select a card, use the action bar' },
-  { action: 'Select multiple cards', how: 'Hold a card or tap Multi' },
+  { action: 'Pesca sul tavolo', how: 'Tocca il mazzo' },
+  { action: 'Pesca nella mano', how: 'Premi In mano' },
+  { action: 'Gira / ruota', how: 'Seleziona una carta e apri Altro' },
+  { action: 'Seleziona più carte', how: 'Tieni premuto o usa Selezione multipla' },
 ]
 
 function getLastNickname() {
@@ -55,35 +63,35 @@ export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }
         <div className="home-grid relative z-10 grid flex-1 items-center gap-5 px-5 pb-5 sm:px-6 md:px-10 lg:grid-cols-[minmax(0,34rem)_1fr] lg:gap-8 lg:pb-8 xl:px-12">
           <div className="home-content">
             <h1 className="home-title max-w-144 font-display text-[clamp(2.7rem,5.8vw,3.75rem)] leading-[0.99] font-semibold tracking-[-0.015em] text-ivory">
-              A deck of cards and an empty table.
+              Un mazzo di carte, un tavolo e tanta libertà.
             </h1>
 
             <p className="mt-3 max-w-[31rem] text-sm leading-relaxed text-ivory/70 sm:text-base">
-              Shuffle, deal, flip and stack. Nothing here enforces the rules, so play
-              the game you already know, or make one up as you go.
+              Mescola, distribuisci, gira e impila le carte. Nessuna regola imposta:
+              scegli il gioco che preferisci, oppure inventane uno.
             </p>
 
             <div className="mt-4 max-w-112">
-              <label htmlFor="player-nickname" className="mb-1.5 block text-[11px] font-semibold tracking-wider text-ivory/65 uppercase">Your nickname</label>
+              <label htmlFor="player-nickname" className="mb-1.5 block text-[11px] font-semibold tracking-wider text-ivory/65 uppercase">Il tuo nickname</label>
               <input
                 id="player-nickname"
                 type="text"
                 value={nickname}
                 maxLength={20}
                 autoComplete="nickname"
-                placeholder="How should others call you?"
+                placeholder="Come vuoi farti chiamare?"
                 onChange={(event) => setNickname(event.target.value)}
                 aria-describedby="nickname-help"
                 className="h-10 w-full rounded-md border border-ivory/15 bg-black/20 px-3 text-sm text-ivory outline-none placeholder:text-ivory/35 focus:border-gold"
               />
-              <p id="nickname-help" className="mt-1 text-[11px] leading-snug text-ivory/55">2–20 characters. Letters, numbers and simple separators. Visible to everyone at your table.</p>
-              {nickname.length > 0 && !validNickname && <p className="mt-1 text-xs text-[#e08a80]">Enter a valid nickname to continue.</p>}
+              <p id="nickname-help" className="mt-1 text-[11px] leading-snug text-ivory/55">Da 2 a 20 caratteri. Lettere, numeri e separatori semplici. Visibile agli altri giocatori.</p>
+              {nickname.length > 0 && !validNickname && <p className="mt-1 text-xs text-[#e08a80]">Inserisci un nickname valido per continuare.</p>}
             </div>
 
             <fieldset className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-ivory/85">
-              <legend className="mb-1 text-[11px] uppercase tracking-wider text-ivory/60">Choose a deck</legend>
-              <label className="flex items-center gap-2"><input type="radio" name="deckKind" value="french" checked={deckKind === 'french'} onChange={() => setDeckKind('french')} /> French · 52 cards</label>
-              <label className="flex items-center gap-2"><input type="radio" name="deckKind" value="italian" checked={deckKind === 'italian'} onChange={() => setDeckKind('italian')} /> Italian · 40 cards</label>
+              <legend className="mb-1 text-[11px] uppercase tracking-wider text-ivory/60">Scegli un mazzo</legend>
+              <label className="flex items-center gap-2"><input type="radio" name="deckKind" value="french" checked={deckKind === 'french'} onChange={() => setDeckKind('french')} /> Francese · 52 carte</label>
+              <label className="flex items-center gap-2"><input type="radio" name="deckKind" value="italian" checked={deckKind === 'italian'} onChange={() => setDeckKind('italian')} /> Italiano · 40 carte</label>
             </fieldset>
 
             <div className="home-room-actions mt-4 grid gap-2 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
@@ -93,7 +101,7 @@ export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }
                 disabled={isConnecting || !validNickname}
                 className="group inline-flex h-11 w-full items-center justify-center gap-3 rounded-md bg-ivory px-5 text-sm font-semibold text-ink shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gold sm:w-auto"
               >
-                Open the table
+                Crea stanza
                 <svg viewBox="0 0 16 16" aria-hidden="true" className="h-4 w-4 transition-transform duration-150 group-hover:translate-x-0.5">
                   <path d="M3 8h10M9 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
@@ -111,8 +119,8 @@ export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }
                   type="text"
                   value={roomCode}
                   maxLength={4}
-                  aria-label="Room code"
-                  placeholder="Room code"
+                  aria-label="Codice stanza"
+                  placeholder="Codice stanza"
                   onChange={(event) => {
                     setRoomCode(
                       event.target.value
@@ -129,7 +137,7 @@ export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }
                   disabled={roomCode.length !== 4 || isConnecting || !validNickname}
                   className="h-11 rounded-md border border-ivory/15 px-4 text-sm font-medium text-ivory/80 transition-colors hover:border-ivory/30 hover:text-ivory disabled:cursor-default disabled:opacity-35"
                 >
-                  Join
+                  Entra
                 </button>
               </form>
             </div>
@@ -142,7 +150,7 @@ export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }
 
             <details className="home-instructions group mt-5 max-w-112 border-t border-ivory/15 text-xs text-ivory/75">
               <summary className="flex cursor-pointer list-none items-center justify-between py-3 text-sm font-medium text-ivory/85 select-none marker:hidden focus-visible:outline-2 focus-visible:outline-gold [&::-webkit-details-marker]:hidden">
-                How to play
+                Come si gioca
                 <svg viewBox="0 0 16 16" aria-hidden="true" className="h-4 w-4 transition-transform duration-150 group-open:rotate-180">
                   <path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
@@ -169,7 +177,7 @@ export function HomeScreen({ onCreateRoom, onJoinRoom, isConnecting, roomError }
               <DeckPileStatic className="h-37.75 w-25 sm:h-42.75 sm:w-30" />
             </div>
 
-            {fan.map((card) => (
+            {(deckKind === 'italian' ? italianFan : frenchFan).map((card) => (
               <div
                 key={`${card.rank}${card.suit}`}
                 className="absolute bottom-[6%] left-1/2 h-39.25 w-27.5 -translate-x-1/2 sm:h-50 sm:w-35"

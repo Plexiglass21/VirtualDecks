@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { animate, motion, useDragControls, useMotionValue } from 'motion/react'
 import type { ElementSize } from '../../hooks/useElementSize'
 import type { NormalizedPosition } from '../../types/position'
@@ -24,6 +24,7 @@ type PlayingCardProps = {
   onFlip: () => void
   onSelect: (additive: boolean) => void
   onSelectOnly: () => void
+  onDragActiveChange?: (active: boolean) => void
 }
 
 const restingShadow = '0 0px 0px rgba(0, 0, 0, 0)'
@@ -38,7 +39,7 @@ function getCardTilt(rank = '', suit = '') {
 export function PlayingCard({
   rank, suit, dragConstraintsRef, tableSize, position, spawnPosition, zIndex,
   faceUp, rotation, selected, multiSelectMode, onEnterMultiSelect,
-  onPositionCommit, onDragStart, onDragMove, onFlip, onSelect, onSelectOnly,
+  onPositionCommit, onDragStart, onDragMove, onFlip, onSelect, onSelectOnly, onDragActiveChange,
 }: PlayingCardProps) {
   const hasSpawned = useRef(false)
   const lastDragPoint = useRef({ x: 0, y: 0 })
@@ -47,6 +48,7 @@ export function PlayingCard({
   const pressStart = useRef<{ x: number; y: number; pointerId: number } | null>(null)
   const didLongPress = useRef(false)
   const didDrag = useRef(false)
+  const [touchDragging, setTouchDragging] = useState(false)
   const lastPointerType = useRef('mouse')
   // Touch dragging is driven by captured Pointer Events rather than a Motion
   // pan recognizer. This prevents Chrome Android from cancelling/losing the
@@ -93,6 +95,7 @@ export function PlayingCard({
   function handleDragStart() {
     cancelLongPress()
     didDrag.current = true
+    onDragActiveChange?.(true)
     lastDragPoint.current = { x: x.get(), y: y.get() }
     onDragStart()
   }
@@ -110,6 +113,7 @@ export function PlayingCard({
   }
 
   function handleDragEnd() {
+    onDragActiveChange?.(false)
     const { width, height } = tableSize
     if (!width || !height) return
     onPositionCommit({ x: clamp01(x.get() / width + 0.5), y: clamp01(y.get() / height + 0.5) })
@@ -176,6 +180,8 @@ export function PlayingCard({
         if (!gesture.moved) {
           gesture.moved = true
           didDrag.current = true
+          setTouchDragging(true)
+          onDragActiveChange?.(true)
           cancelLongPress()
         }
         // The dragged card follows the finger without waiting for a server
@@ -199,6 +205,8 @@ export function PlayingCard({
         if (gesture?.pointerId === event.pointerId) {
           touchDrag.current = null
           if (gesture.moved) {
+            setTouchDragging(false)
+            onDragActiveChange?.(false)
             if (tableSize.width > 0 && tableSize.height > 0) {
               const dx = event.clientX - gesture.startX
               const dy = event.clientY - gesture.startY
@@ -224,6 +232,8 @@ export function PlayingCard({
         else handleSelect(multiSelectMode || event.shiftKey || event.ctrlKey || event.metaKey)
       }}
       onPointerCancel={() => {
+        setTouchDragging(false)
+        onDragActiveChange?.(false)
         cancelLongPress()
         pressStart.current = null
         const gesture = touchDrag.current
@@ -242,10 +252,11 @@ export function PlayingCard({
       }}
       onDoubleClick={() => { if (lastPointerType.current === 'mouse') onFlip() }}
       style={{ x, y, zIndex, rotate: rotation + tilt, boxShadow: restingShadow }}
+      data-touch-dragging={touchDragging}
       initial={{ opacity: 0, scale: 0.92 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.2 }}
-      aria-label={faceUp && rank && suit ? `${rank} of ${suit}. Select card.` : 'Face-down card. Select card.'}
+      aria-label={faceUp && rank && suit ? `${rank} di ${suit}. Seleziona carta.` : 'Carta coperta. Seleziona carta.'}
       aria-pressed={selected}
       className={`group table-card absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-lg select-none active:cursor-grabbing focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gold ${selected ? 'outline-2 outline-offset-[3px] outline-gold' : ''}`}
     >
